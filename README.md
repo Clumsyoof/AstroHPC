@@ -61,7 +61,7 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   + A terminal emulator with UTF-8 and 256-color / Truecolor support
   (e.g. Alacritty, Kitty, WezTerm, GNOME Terminal, Windows Terminal)
-    ──────
+   
   ### Installation
 
   #### Gentoo Linux
@@ -81,8 +81,6 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
   ```sh
   make
   ```
-  * `./astro_tui` — Interactive Bubble Tea terminal visualizer
-  * `./nbody_sim` — Headless C benchmark engine
 
 <!-- USAGE EXAMPLES -->
 ## Usage
