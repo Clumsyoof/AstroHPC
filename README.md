@@ -129,7 +129,7 @@ Distributed under the project_license. See `LICENSE.txt` for more information.
 ## Contact
 
 Advik.k -[LinkedIn](https://www.linkedin.com/in/advikkaushik06/) - advikkaushik478[at]gmail[dot]com
-Project Link: [https://github.com/Clumsyoof/thread-picruncher](https://github.com/Clumsyoof/AstroHPC)
+Project Link: [https://github.com/Clumsyoof/AstroHPC](https://github.com/Clumsyoof/AstroHPC)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
