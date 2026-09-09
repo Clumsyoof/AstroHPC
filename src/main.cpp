@@ -12,6 +12,7 @@
 #include "particles.hpp"
 #include "backend.hpp"
 #include "snapshot.hpp"
+#include "mpi_domain.hpp"
 
 using namespace astro;
 
@@ -46,6 +47,8 @@ static void print_usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
+    auto mpi = MpiContext::init(&argc, &argv);
+
     int n = 8192;
     int steps = 100;
     float g_val = DEFAULT_G;
@@ -94,11 +97,15 @@ int main(int argc, char** argv) {
         } else if (arg == "-b" || arg == "--bench") {
             bench_mode = true;
         } else if (arg == "-h" || arg == "--help") {
-            print_usage(argv[0]);
+            if (mpi.is_root()) print_usage(argv[0]);
+            mpi.finalize();
             return 0;
         } else {
-            std::cerr << "Unknown argument: " << arg << "\n";
-            print_usage(argv[0]);
+            if (mpi.is_root()) {
+                std::cerr << "Unknown argument: " << arg << "\n";
+                print_usage(argv[0]);
+            }
+            mpi.finalize();
             return 1;
         }
     }
@@ -107,7 +114,8 @@ int main(int argc, char** argv) {
 
     if (!csv_file.empty()) {
         if (!ps.load_csv(csv_file)) {
-            std::cerr << "Error: Failed to load CSV file: " << csv_file << "\n";
+            if (mpi.is_root()) std::cerr << "Error: Failed to load CSV file: " << csv_file << "\n";
+            mpi.finalize();
             return 1;
         }
         n = static_cast<int>(ps.count);
@@ -122,15 +130,25 @@ int main(int argc, char** argv) {
         ps.init_disk(n, 100.0f, 1000.0f, 200.0f);
     }
 
+    // Partition initial particles across MPI ranks if distributed
+    if (mpi.enabled) {
+        mpi.partition_particles(ps);
+    }
+
     auto backend = create_compute_backend();
 
-    print_banner();
-    std::cout << "astrohpc (C++ Modern HPC): backend=" << backend->name()
-              << ", bodies=" << n << ", steps=" << steps
-              << ", algo=" << (use_direct ? "direct" : "barnes-hut")
-              << ", G=" << g_val << ", dt=" << dt << "\n\n";
+    if (mpi.is_root()) {
+        print_banner();
+        std::cout << "astrohpc (C++ Modern HPC): backend=" << backend->name();
+        if (mpi.enabled) {
+            std::cout << " [MPI " << mpi.size << " ranks]";
+        }
+        std::cout << ", bodies=" << n << ", steps=" << steps
+                  << ", algo=" << (use_direct ? "direct" : "barnes-hut")
+                  << ", G=" << g_val << ", dt=" << dt << "\n\n";
+    }
 
-    if (compare_mode) {
+    if (compare_mode && mpi.is_root()) {
         std::cout << "--- Running Baseline Comparison (Step 0) ---\n";
         auto t0 = std::chrono::high_resolution_clock::now();
         backend->direct_compute_forces(ps, g_val, eps_sq);
@@ -170,14 +188,14 @@ int main(int argc, char** argv) {
         std::cout << "--------------------------------------------\n\n";
     }
 
-    if (n <= 4096) {
+    if (n <= 4096 && mpi.is_root() && !mpi.enabled) {
         double ke0, pe0;
         ps.compute_energy(g_val, eps_sq, ke0, pe0);
         std::cout << std::scientific << std::setprecision(4);
         std::cout << "Initial Energy -> KE: " << ke0 << " | PE: " << pe0 << " | Total: " << (ke0 + pe0) << "\n\n";
     }
 
-    if (!dump_dir.empty()) {
+    if (!dump_dir.empty() && mpi.is_root()) {
         mkdir(dump_dir.c_str(), 0777);
     }
 
@@ -185,22 +203,54 @@ int main(int argc, char** argv) {
     float sim_time = 0.0f;
 
     for (int s = 0; s < steps; s++) {
-        if (!dump_dir.empty() && (s % dump_interval == 0)) {
+        if (!dump_dir.empty() && (s % dump_interval == 0) && mpi.is_root()) {
             char path[512];
             std::snprintf(path, sizeof(path), "%s/step_%05d.bin", dump_dir.c_str(), s);
             write_snapshot(path, ps, s, sim_time, dt);
         }
 
-        if (use_direct) {
-            backend->direct_compute_forces(ps, g_val, eps_sq);
+        if (mpi.enabled) {
+            // Distributed Locally Essential Tree (LET) cycle
+            BoundingBox g_box = mpi.global_bounding_box(ps);
+            mpi.migrate_particles(ps, g_box);
+            auto remote_multipoles = mpi.exchange_multipoles(ps, g_box);
+
+            if (use_direct) {
+                backend->direct_compute_forces(ps, g_val, eps_sq);
+            } else {
+                backend->compute_forces(ps, theta, g_val, eps_sq);
+            }
+
+            // Accumulate gravitational forces from coarse remote multipoles
+            for (const auto& rm : remote_multipoles) {
+                if (rm.mass <= 0.0f) continue;
+                for (size_t i = 0; i < ps.count; i++) {
+                    float dx = rm.com_x - ps.x[i];
+                    float dy = rm.com_y - ps.y[i];
+                    float dz = rm.com_z - ps.z[i];
+                    float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                    float inv_dist = 1.0f / std::sqrt(dist_sq);
+                    float inv_cube = inv_dist * inv_dist * inv_dist;
+                    float scale = g_val * rm.mass * inv_cube;
+
+                    ps.ax[i] += scale * dx;
+                    ps.ay[i] += scale * dy;
+                    ps.az[i] += scale * dz;
+                }
+            }
         } else {
-            backend->compute_forces(ps, theta, g_val, eps_sq);
+            if (use_direct) {
+                backend->direct_compute_forces(ps, g_val, eps_sq);
+            } else {
+                backend->compute_forces(ps, theta, g_val, eps_sq);
+            }
         }
 
         ps.integrate_symplectic(dt);
         sim_time += dt;
 
-        if (bench_mode && (s % 10 == 0 || s == steps - 1)) {
+        if (bench_mode && mpi.is_root() && (s % 10 == 0 || s == steps - 1)) {
             std::cout << "[Step " << std::setw(4) << s << "/" << steps << "] sim_time=" << sim_time << "\n";
         }
     }
@@ -208,16 +258,19 @@ int main(int argc, char** argv) {
     auto end_sim = std::chrono::high_resolution_clock::now();
     double total_ms = std::chrono::duration<double, std::milli>(end_sim - start_sim).count();
 
-    std::cout << std::fixed << std::setprecision(2);
-    std::cout << "\nSimulation completed in " << total_ms << " ms ("
-              << (total_ms / steps) << " ms/step)\n";
+    if (mpi.is_root()) {
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "\nSimulation completed in " << total_ms << " ms ("
+                  << (total_ms / steps) << " ms/step)\n";
 
-    if (n <= 4096) {
-        double ke_final, pe_final;
-        ps.compute_energy(g_val, eps_sq, ke_final, pe_final);
-        std::cout << std::scientific << std::setprecision(4);
-        std::cout << "Final   Energy -> KE: " << ke_final << " | PE: " << pe_final << " | Total: " << (ke_final + pe_final) << "\n";
+        if (n <= 4096 && !mpi.enabled) {
+            double ke_final, pe_final;
+            ps.compute_energy(g_val, eps_sq, ke_final, pe_final);
+            std::cout << std::scientific << std::setprecision(4);
+            std::cout << "Final   Energy -> KE: " << ke_final << " | PE: " << pe_final << " | Total: " << (ke_final + pe_final) << "\n";
+        }
     }
 
+    mpi.finalize();
     return 0;
 }

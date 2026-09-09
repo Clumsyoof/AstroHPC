@@ -12,6 +12,7 @@ endif()
 
 # Build configuration options
 option(ENABLE_CUDA "Enable CUDA GPU acceleration backend" OFF)
+option(ENABLE_MPI "Enable distributed MPI parallelism" ON)
 option(BUILD_VIEWER "Build Raylib 3D visualizer" ON)
 option(BUILD_TUI "Build interactive Go TUI" ON)
 option(BUILD_TESTS "Build comprehensive test suite" ON)
@@ -20,6 +21,17 @@ option(BUILD_TESTS "Build comprehensive test suite" ON)
 set(MARCH "" CACHE STRING "Architecture optimization flag (e.g. native, x86-64-v3)")
 if(MARCH)
     add_compile_options(-march=${MARCH})
+endif()
+
+# MPI distributed computing configuration
+if(ENABLE_MPI)
+    find_package(MPI QUIET)
+    if(MPI_CXX_FOUND)
+        message(STATUS "MPI C++ found: ${MPI_CXX_COMPILER} (Version: ${MPI_CXX_VERSION})")
+        add_compile_definitions(ASTRO_ENABLE_MPI)
+    else()
+        message(STATUS "MPI not found; building in single-node mode")
+    endif()
 endif()
 
 # CUDA backend configuration (modular cluster deployment)
@@ -35,6 +47,7 @@ set(CORE_SOURCES
     src/particle_system.cpp
     src/backend/cpu_backend.cpp
     src/backend/backend_factory.cpp
+    src/mpi_domain.cpp
     src/snapshot.c
 )
 if(ENABLE_CUDA)
@@ -44,6 +57,9 @@ endif()
 add_library(astro_core STATIC ${CORE_SOURCES})
 target_include_directories(astro_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(astro_core PUBLIC m)
+if(MPI_CXX_FOUND)
+    target_link_libraries(astro_core PUBLIC MPI::MPI_CXX)
+endif()
 
 # 1. Headless CLI Simulator
 add_executable(nbody_sim src/main.cpp)
