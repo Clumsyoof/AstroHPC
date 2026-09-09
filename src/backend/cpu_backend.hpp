@@ -23,6 +23,7 @@ public:
     void direct_compute_forces(ParticleSystem& ps, float G, float eps_sq) override;
 
     int get_node_count() const { return static_cast<int>(nodes.size()); }
+    const std::vector<CpuOctNode>& get_nodes() const { return nodes; }
 
 private:
     std::vector<CpuOctNode> nodes;

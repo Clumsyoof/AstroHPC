@@ -24,31 +24,27 @@ ifeq ($(ENABLE_CUDA), 1)
     LDFLAGS += -lcudart
 endif
 
-# C++ Core Engine
-CPP_SRC = src/main.cpp src/particle_system.cpp src/backend/cpu_backend.cpp src/backend/backend_factory.cpp
-CPP_OBJ = $(CPP_SRC:.cpp=.o)
-C_SRC   = src/snapshot.c
-C_OBJ   = $(C_SRC:.c=.o)
+# Core Engine Objects (Modern C++ SoA & Backend)
+CORE_CPP_SRC = src/particle_system.cpp src/backend/cpu_backend.cpp src/backend/backend_factory.cpp
+CORE_CPP_OBJ = $(CORE_CPP_SRC:.cpp=.o)
+C_SRC        = src/snapshot.c
+C_OBJ        = $(C_SRC:.c=.o)
 
 TARGET = nbody_sim
 TUI_TARGET = astro_tui
 VIEWER_TARGET = astro_view
-
-VIEWER_SRC = src/viewer.c src/snapshot.c src/particles.c src/octree.c
-VIEWER_OBJ = src/viewer.o src/snapshot.o src/particles.o src/octree.o
-RAYLIB_FLAGS = -L/usr/local/lib -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -fopenmp
-
-TEST_CPP_SRC = tests/test_hpc.cpp src/particle_system.cpp src/backend/cpu_backend.cpp src/backend/backend_factory.cpp
-TEST_CPP_OBJ = tests/test_hpc.o src/particle_system.o src/backend/cpu_backend.o src/backend/backend_factory.o
 TEST_TARGET = test_hpc
+
+VIEWER_OBJ = src/viewer.o $(CORE_CPP_OBJ) $(C_OBJ)
+RAYLIB_FLAGS = -L/usr/local/lib -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
 all: $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET)
 
-$(TARGET): $(CPP_OBJ) $(C_OBJ) $(CUDA_OBJ)
+$(TARGET): src/main.o $(CORE_CPP_OBJ) $(C_OBJ) $(CUDA_OBJ)
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
 $(VIEWER_TARGET): $(VIEWER_OBJ)
-	$(CC) $(VIEWER_OBJ) -o $@ $(RAYLIB_FLAGS)
+	$(CXX) $(VIEWER_OBJ) -o $@ $(RAYLIB_FLAGS)
 
 $(TUI_TARGET):
 	go build -o $(TUI_TARGET) ./cmd/tui
@@ -56,7 +52,7 @@ $(TUI_TARGET):
 test: $(TEST_TARGET)
 	@./$(TEST_TARGET)
 
-$(TEST_TARGET): $(TEST_CPP_OBJ) $(C_OBJ) $(CUDA_OBJ)
+$(TEST_TARGET): tests/test_hpc.o $(CORE_CPP_OBJ) $(C_OBJ) $(CUDA_OBJ)
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
 %.o: %.cpp
@@ -69,6 +65,6 @@ $(TEST_TARGET): $(TEST_CPP_OBJ) $(C_OBJ) $(CUDA_OBJ)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(CPP_OBJ) $(C_OBJ) $(CUDA_OBJ) $(VIEWER_OBJ) $(TEST_CPP_OBJ) src/octree.o src/particles.o $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET) $(TEST_TARGET)
+	rm -f src/*.o src/backend/*.o tests/*.o $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET) $(TEST_TARGET)
 
 .PHONY: all clean test $(TUI_TARGET)

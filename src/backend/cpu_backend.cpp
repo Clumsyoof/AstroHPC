@@ -4,7 +4,9 @@
 
 namespace astro {
 
-static constexpr int MAX_OCTREE_DEPTH = 32;
+#ifndef MAX_OCTREE_DEPTH
+#define MAX_OCTREE_DEPTH 32
+#endif
 
 void CpuBackend::reset_pool() {
     nodes.clear();

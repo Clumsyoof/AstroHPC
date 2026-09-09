@@ -1,8 +1,9 @@
 package main
 
 /*
-#cgo CFLAGS: -I../../include -O3 -fopenmp -std=c99 -march=native
-#cgo LDFLAGS: -lm -fopenmp
+#cgo CFLAGS: -I../../include -O3
+#cgo CXXFLAGS: -std=c++17 -I../../include -O3
+#cgo LDFLAGS: -lm -lstdc++
 #include "engine.h"
 #include <stdlib.h>
 */
