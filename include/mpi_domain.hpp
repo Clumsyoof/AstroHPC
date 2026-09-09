@@ -16,6 +16,11 @@ struct RemoteMultipole {
     float mass;
     float half_size;
     float cx, cy, cz;
+    int rank;
+};
+
+struct GlobalParticle {
+    float x, y, z, m;
 };
 
 class MpiContext {
@@ -38,9 +43,11 @@ public:
     // Migrates particles across domain boundaries to their target rank
     void migrate_particles(ParticleSystem& ps, const BoundingBox& global_bbox) const;
 
-    // Exchanges coarse top-level multipoles for remote domain evaluation (LET)
-    std::vector<RemoteMultipole> exchange_multipoles(const ParticleSystem& local_ps,
-                                                    const BoundingBox& local_bbox) const;
+    // Exchanges coarse subtrees/multipoles for distributed Locally Essential Tree (LET) evaluation
+    std::vector<RemoteMultipole> exchange_multipoles(const std::vector<RemoteMultipole>& local_nodes) const;
+
+    // Gathers all particles across ranks for distributed verification (--compare)
+    std::vector<GlobalParticle> gather_all_particles(const ParticleSystem& ps, std::vector<int>& out_displs) const;
 };
 
 } // namespace astro

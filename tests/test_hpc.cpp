@@ -470,6 +470,57 @@ bool test_performance_regression() {
     return true;
 }
 
+// 13. Coarse subtree extraction & conservation (Distributed LET building block)
+bool test_coarse_tree_extraction_and_conservation() {
+    ParticleSystem ps;
+    ps.init_disk(512, 50.0f, 500.0f, 150.0f);
+
+    float total_mass = 0.0f;
+    double true_com_x = 0.0, true_com_y = 0.0, true_com_z = 0.0;
+    for (size_t i = 0; i < ps.count; i++) {
+        total_mass += ps.m[i];
+        true_com_x += ps.m[i] * ps.x[i];
+        true_com_y += ps.m[i] * ps.y[i];
+        true_com_z += ps.m[i] * ps.z[i];
+    }
+    true_com_x /= total_mass;
+    true_com_y /= total_mass;
+    true_com_z /= total_mass;
+
+    auto backend = create_compute_backend();
+    backend->compute_forces(ps, 0.65f, 1.0f, 0.04f);
+
+    std::vector<RemoteMultipole> coarse_nodes;
+    backend->extract_coarse_nodes(2, 0, coarse_nodes);
+
+    ASSERT_TRUE(!coarse_nodes.empty(), "Extracted coarse nodes list should not be empty");
+    ASSERT_TRUE(coarse_nodes.size() <= 64, "At depth <= 2, coarse cut should have <= 64 cells");
+
+    float coarse_total_mass = 0.0f;
+    double coarse_com_x = 0.0, coarse_com_y = 0.0, coarse_com_z = 0.0;
+    for (const auto& node : coarse_nodes) {
+        ASSERT_TRUE(node.mass > 0.0f, "Coarse node mass must be positive");
+        ASSERT_TRUE(node.half_size > 0.0f, "Coarse node half_size must be positive");
+        coarse_total_mass += node.mass;
+        coarse_com_x += node.mass * node.com_x;
+        coarse_com_y += node.mass * node.com_y;
+        coarse_com_z += node.mass * node.com_z;
+    }
+    coarse_com_x /= coarse_total_mass;
+    coarse_com_y /= coarse_total_mass;
+    coarse_com_z /= coarse_total_mass;
+
+    float mass_err = std::abs(coarse_total_mass - total_mass) / total_mass;
+    ASSERT_TRUE(mass_err < 1e-4f, "Coarse nodes total mass must match true particle mass");
+
+    double com_dist = std::sqrt((coarse_com_x - true_com_x) * (coarse_com_x - true_com_x) +
+                                (coarse_com_y - true_com_y) * (coarse_com_y - true_com_y) +
+                                (coarse_com_z - true_com_z) * (coarse_com_z - true_com_z));
+    ASSERT_TRUE(com_dist < 1e-2, "Coarse nodes aggregate COM must match system COM");
+
+    return true;
+}
+
 int main() {
     std::cout << "=================================================\n";
     std::cout << "         AstroHPC Comprehensive Test Suite       \n";
@@ -487,6 +538,7 @@ int main() {
     RUN_TEST(test_pathological_coincident_particles);
     RUN_TEST(test_pathological_extreme_scales);
     RUN_TEST(test_performance_regression);
+    RUN_TEST(test_coarse_tree_extraction_and_conservation);
 
     std::cout << "=================================================\n";
     std::cout << "Result: " << tests_passed << " / " << tests_run

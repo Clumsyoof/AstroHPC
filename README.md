@@ -66,20 +66,25 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   #### Gentoo Linux
   ```sh
-  emerge --ask dev-build/cmake sys-devel/gcc dev-lang/go media-libs/raylib
+  emerge --ask dev-build/cmake sys-devel/gcc sys-cluster/openmpi dev-lang/go media-libs/raylib
   ```
   #### Ubuntu / Debian
   ```sh
-  sudo apt update && sudo apt install build-essential cmake gcc g++ golang libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+  sudo apt update && sudo apt install build-essential cmake gcc g++ libopenmpi-dev openmpi-bin libomp-dev golang libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
   ```
   #### Fedora / RHEL
   ```sh
-  sudo dnf install cmake gcc gcc-c++ golang raylib-devel
+  sudo dnf install cmake gcc gcc-c++ openmpi openmpi-devel libomp-devel golang raylib-devel
   ```
 
   ### Build
   ```sh
+  # Standard CPU build (OpenMP intra-node multi-threading + MPI distributed memory enabled by default)
   cmake -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build -j$(nproc)
+
+  # Optional CUDA GPU backend build
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_CUDA=ON
   cmake --build build -j$(nproc)
   ```
 
@@ -87,12 +92,32 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 ## Usage
 
 > [!NOTE]
-> The disk preset provides an idealized mock galactic disk (power-law surface density and Salpeter IMF) for visualization and benchmarking, not an exact self-consistent Jeans-theorem equilibrium.
-> The CPU compute backend uses a dynamic Structure-of-Arrays (SoA) layout and 64-bit Morton curve decomposition. A modular CUDA backend interface is available for cluster builds (`-DENABLE_CUDA=ON`).
+> **HPC Parallelization Architecture**:
+> - **MPI Domain Decomposition**: Particles are distributed along a 64-bit Morton space-filling curve. As particles drift across spatial domain boundaries, they are dynamically migrated between ranks via `MPI_Alltoallv`.
+> - **Locally Essential Tree (LET)**: Rather than reducing remote ranks to a single point mass, each rank extracts a coarse subtree cut (down to depth 2, up to 64 sub-cells with exact centers of mass) exchanged via `MPI_Allgatherv`. Local particles evaluate remote forces against this essential tree.
+> - **OpenMP Intra-Node Multi-Threading**: Traversal stacks are privatized per thread (`#pragma omp parallel`), parallelizing tree walk, direct $O(N^2)$ all-pairs, symplectic Leapfrog integration, and physical energy/momentum diagnostics.
+> - **CUDA Backend**: Uses persistent device memory buffers across timesteps to eliminate allocation overhead, running a shared-memory tiled $O(N^2)$ direct offload kernel. MAC $\theta$ is bypassed on GPU runs since tree construction remains on CPU.
 
 ### Comprehensive HPC Test Suite
 ```sh
 ctest --test-dir build --output-on-failure
+```
+
+### Hybrid Distributed Simulation (MPI + OpenMP)
+```sh
+# 4 MPI ranks x 8 OpenMP threads per rank = 32 compute cores
+export OMP_NUM_THREADS=8
+mpirun -np 4 ./build/nbody_sim -n 32768 -s 200 -b
+
+# Distributed baseline accuracy comparison on Step 0:
+# Evaluates distributed LET against exact global all-pairs direct force across all ranks
+mpirun -np 4 ./build/nbody_sim -n 4096 --compare
+```
+
+### Single-Node Headless Simulator
+```sh
+./build/nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
+./build/nbody_sim -n 4096 --compare   # Compare single-node Barnes-Hut vs Direct O(N^2)
 ```
 
 ### Interactive TUI
@@ -102,12 +127,6 @@ ctest --test-dir build --output-on-failure
 ./build/astro_tui -preset three_body  # 3-body orbital preset
 ```
 *Controls: `[Space]` Pause/Resume &bull; `[R]` Reset &bull; `[Q]` Quit*
-
-### Headless Engine & Verification
-```sh
-./build/nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
-./build/nbody_sim -n 4096 --compare   # Compare Barnes-Hut vs Direct O(N^2)
-```
 
 ### 3D Visualizer
 ```sh

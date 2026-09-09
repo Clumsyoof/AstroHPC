@@ -8,6 +8,10 @@
 #include <cstring>
 #include <sys/stat.h>
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #include "config.h"
 #include "particles.hpp"
 #include "backend.hpp"
@@ -143,49 +147,245 @@ int main(int argc, char** argv) {
         if (mpi.enabled) {
             std::cout << " [MPI " << mpi.size << " ranks]";
         }
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+        std::cout << " [OpenMP " << omp_get_max_threads() << " threads]";
+#endif
         std::cout << ", bodies=" << n << ", steps=" << steps
                   << ", algo=" << (use_direct ? "direct" : "barnes-hut")
                   << ", G=" << g_val << ", dt=" << dt << "\n\n";
     }
 
-    if (compare_mode && mpi.is_root()) {
-        std::cout << "--- Running Baseline Comparison (Step 0) ---\n";
-        auto t0 = std::chrono::high_resolution_clock::now();
-        backend->direct_compute_forces(ps, g_val, eps_sq);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double t_direct = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (compare_mode) {
+        if (mpi.enabled) {
+            if (mpi.is_root()) {
+                std::cout << "--- Running Distributed Baseline Comparison (Step 0) ---\n";
+            }
+            // 1. Evaluate Distributed LET (Local Tree + Remote Coarse Subtree Cut)
+            auto t0_let = std::chrono::high_resolution_clock::now();
 
-        std::vector<float> d_ax = ps.ax;
-        std::vector<float> d_ay = ps.ay;
-        std::vector<float> d_az = ps.az;
+            BoundingBox g_box = mpi.global_bounding_box(ps);
+            mpi.migrate_particles(ps, g_box);
 
-        auto t2 = std::chrono::high_resolution_clock::now();
-        backend->compute_forces(ps, theta, g_val, eps_sq);
-        auto t3 = std::chrono::high_resolution_clock::now();
-        double t_bh = std::chrono::duration<double, std::milli>(t3 - t2).count();
+            backend->compute_forces(ps, theta, g_val, eps_sq);
 
-        double max_rel_err = 0.0;
-        double sum_rel_err = 0.0;
-        for (int i = 0; i < n; i++) {
-            double d_mag = std::sqrt(d_ax[i]*d_ax[i] + d_ay[i]*d_ay[i] + d_az[i]*d_az[i]);
-            double diff_x = ps.ax[i] - d_ax[i];
-            double diff_y = ps.ay[i] - d_ay[i];
-            double diff_z = ps.az[i] - d_az[i];
-            double diff_mag = std::sqrt(diff_x*diff_x + diff_y*diff_y + diff_z*diff_z);
+            std::vector<RemoteMultipole> local_coarse;
+            backend->extract_coarse_nodes(2, mpi.rank, local_coarse);
+            auto remote_multipoles = mpi.exchange_multipoles(local_coarse);
 
-            double rel_err = (d_mag > 1e-8) ? (diff_mag / d_mag) : diff_mag;
-            if (rel_err > max_rel_err) max_rel_err = rel_err;
-            sum_rel_err += rel_err;
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+            for (size_t i = 0; i < ps.count; i++) {
+                const float xi = ps.x[i];
+                const float yi = ps.y[i];
+                const float zi = ps.z[i];
+
+                float d_ax = 0.0f;
+                float d_ay = 0.0f;
+                float d_az = 0.0f;
+
+                for (const auto& rm : remote_multipoles) {
+                    if (rm.rank == mpi.rank || rm.mass <= 0.0f) continue;
+                    const float dx = rm.com_x - xi;
+                    const float dy = rm.com_y - yi;
+                    const float dz = rm.com_z - zi;
+                    const float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                    const float inv_dist = 1.0f / std::sqrt(dist_sq);
+                    const float inv_cube = inv_dist * inv_dist * inv_dist;
+                    const float scale = g_val * rm.mass * inv_cube;
+
+                    d_ax += scale * dx;
+                    d_ay += scale * dy;
+                    d_az += scale * dz;
+                }
+
+                ps.ax[i] += d_ax;
+                ps.ay[i] += d_ay;
+                ps.az[i] += d_az;
+            }
+
+            auto t1_let = std::chrono::high_resolution_clock::now();
+            double t_let = std::chrono::duration<double, std::milli>(t1_let - t0_let).count();
+
+            // Store distributed LET accelerations for error comparison
+            std::vector<float> dist_ax = ps.ax;
+            std::vector<float> dist_ay = ps.ay;
+            std::vector<float> dist_az = ps.az;
+
+            // 2. Compute exact ground-truth global all-pairs direct force across all MPI ranks
+            auto t0_direct = std::chrono::high_resolution_clock::now();
+            std::vector<int> displs;
+            auto all_gp = mpi.gather_all_particles(ps, displs);
+            size_t total_n = all_gp.size();
+
+            double local_max_err = 0.0;
+            double local_sum_err = 0.0;
+
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel
+            {
+                double thread_max_err = 0.0;
+                double thread_sum_err = 0.0;
+
+#pragma omp for schedule(static)
+                for (size_t i = 0; i < ps.count; i++) {
+                    const float xi = ps.x[i];
+                    const float yi = ps.y[i];
+                    const float zi = ps.z[i];
+                    const size_t global_i = displs[mpi.rank] + i;
+
+                    float true_ax = 0.0f;
+                    float true_ay = 0.0f;
+                    float true_az = 0.0f;
+
+                    for (size_t j = 0; j < total_n; j++) {
+                        if (j == global_i) continue;
+                        const float dx = all_gp[j].x - xi;
+                        const float dy = all_gp[j].y - yi;
+                        const float dz = all_gp[j].z - zi;
+                        const float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                        const float inv_dist = 1.0f / std::sqrt(dist_sq);
+                        const float inv_cube = inv_dist * inv_dist * inv_dist;
+                        const float scale = g_val * all_gp[j].m * inv_cube;
+
+                        true_ax += scale * dx;
+                        true_ay += scale * dy;
+                        true_az += scale * dz;
+                    }
+
+                    double d_mag = std::sqrt(true_ax * true_ax + true_ay * true_ay + true_az * true_az);
+                    double diff_x = dist_ax[i] - true_ax;
+                    double diff_y = dist_ay[i] - true_ay;
+                    double diff_z = dist_az[i] - true_az;
+                    double diff_mag = std::sqrt(diff_x * diff_x + diff_y * diff_y + diff_z * diff_z);
+
+                    double rel_err = (d_mag > 1e-8) ? (diff_mag / d_mag) : diff_mag;
+                    if (rel_err > thread_max_err) thread_max_err = rel_err;
+                    thread_sum_err += rel_err;
+                }
+
+#pragma omp critical
+                {
+                    if (thread_max_err > local_max_err) local_max_err = thread_max_err;
+                    local_sum_err += thread_sum_err;
+                }
+            }
+#else
+            for (size_t i = 0; i < ps.count; i++) {
+                const float xi = ps.x[i];
+                const float yi = ps.y[i];
+                const float zi = ps.z[i];
+                const size_t global_i = displs[mpi.rank] + i;
+
+                float true_ax = 0.0f;
+                float true_ay = 0.0f;
+                float true_az = 0.0f;
+
+                for (size_t j = 0; j < total_n; j++) {
+                    if (j == global_i) continue;
+                    const float dx = all_gp[j].x - xi;
+                    const float dy = all_gp[j].y - yi;
+                    const float dz = all_gp[j].z - zi;
+                    const float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                    const float inv_dist = 1.0f / std::sqrt(dist_sq);
+                    const float inv_cube = inv_dist * inv_dist * inv_dist;
+                    const float scale = g_val * all_gp[j].m * inv_cube;
+
+                    true_ax += scale * dx;
+                    true_ay += scale * dy;
+                    true_az += scale * dz;
+                }
+
+                double d_mag = std::sqrt(true_ax * true_ax + true_ay * true_ay + true_az * true_az);
+                double diff_x = dist_ax[i] - true_ax;
+                double diff_y = dist_ay[i] - true_ay;
+                double diff_z = dist_az[i] - true_az;
+                double diff_mag = std::sqrt(diff_x * diff_x + diff_y * diff_y + diff_z * diff_z);
+
+                double rel_err = (d_mag > 1e-8) ? (diff_mag / d_mag) : diff_mag;
+                if (rel_err > local_max_err) local_max_err = rel_err;
+                local_sum_err += rel_err;
+            }
+#endif
+
+            auto t1_direct = std::chrono::high_resolution_clock::now();
+            double t_direct = std::chrono::duration<double, std::milli>(t1_direct - t0_direct).count();
+
+            double global_max_err = 0.0;
+            double global_sum_err = 0.0;
+            double global_direct_ms = 0.0;
+            double global_let_ms = 0.0;
+
+#ifdef ASTRO_ENABLE_MPI
+            MPI_Reduce(&local_max_err, &global_max_err, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_sum_err, &global_sum_err, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&t_direct, &global_direct_ms, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&t_let, &global_let_ms, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+#else
+            global_max_err = local_max_err;
+            global_sum_err = local_sum_err;
+            global_direct_ms = t_direct;
+            global_let_ms = t_let;
+#endif
+
+            if (mpi.is_root()) {
+                std::cout << std::fixed << std::setprecision(3);
+                std::cout << "  Global Particles:          " << total_n << " (across " << mpi.size << " ranks)\n";
+                std::cout << "  Global Direct O(N^2) Time: " << std::setw(8) << global_direct_ms << " ms\n";
+                std::cout << "  Distributed LET Time:      " << std::setw(8) << global_let_ms << " ms\n";
+                std::cout << "  Speedup:                   " << std::setw(8) << (global_direct_ms / std::max(global_let_ms, 1e-6)) << "x\n";
+                std::cout << std::setprecision(4);
+                std::cout << "  Mean Relative Force Err:   " << std::setw(8) << (global_sum_err / total_n) * 100.0 << "%\n";
+                std::cout << "  Max  Relative Force Err:   " << std::setw(8) << global_max_err * 100.0 << "%\n";
+                std::cout << "--------------------------------------------------------\n\n";
+            }
+
+            // Restore distributed acceleration state
+            ps.ax = std::move(dist_ax);
+            ps.ay = std::move(dist_ay);
+            ps.az = std::move(dist_az);
+        } else if (mpi.is_root()) {
+            std::cout << "--- Running Baseline Comparison (Step 0) ---\n";
+            auto t0 = std::chrono::high_resolution_clock::now();
+            backend->direct_compute_forces(ps, g_val, eps_sq);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double t_direct = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            std::vector<float> d_ax = ps.ax;
+            std::vector<float> d_ay = ps.ay;
+            std::vector<float> d_az = ps.az;
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            backend->compute_forces(ps, theta, g_val, eps_sq);
+            auto t3 = std::chrono::high_resolution_clock::now();
+            double t_bh = std::chrono::duration<double, std::milli>(t3 - t2).count();
+
+            double max_rel_err = 0.0;
+            double sum_rel_err = 0.0;
+            for (int i = 0; i < n; i++) {
+                double d_mag = std::sqrt(d_ax[i]*d_ax[i] + d_ay[i]*d_ay[i] + d_az[i]*d_az[i]);
+                double diff_x = ps.ax[i] - d_ax[i];
+                double diff_y = ps.ay[i] - d_ay[i];
+                double diff_z = ps.az[i] - d_az[i];
+                double diff_mag = std::sqrt(diff_x*diff_x + diff_y*diff_y + diff_z*diff_z);
+
+                double rel_err = (d_mag > 1e-8) ? (diff_mag / d_mag) : diff_mag;
+                if (rel_err > max_rel_err) max_rel_err = rel_err;
+                sum_rel_err += rel_err;
+            }
+
+            std::cout << std::fixed << std::setprecision(3);
+            std::cout << "  Direct O(N^2) Time:      " << std::setw(8) << t_direct << " ms\n";
+            std::cout << "  Barnes-Hut Time:         " << std::setw(8) << t_bh << " ms\n";
+            std::cout << "  Speedup:                 " << std::setw(8) << (t_direct / std::max(t_bh, 1e-6)) << "x\n";
+            std::cout << std::setprecision(4);
+            std::cout << "  Mean Relative Force Err: " << std::setw(8) << (sum_rel_err / n) * 100.0 << "%\n";
+            std::cout << "  Max  Relative Force Err: " << std::setw(8) << max_rel_err * 100.0 << "%\n";
+            std::cout << "--------------------------------------------\n\n";
         }
-
-        std::cout << std::fixed << std::setprecision(3);
-        std::cout << "  Direct O(N^2) Time:      " << std::setw(8) << t_direct << " ms\n";
-        std::cout << "  Barnes-Hut Time:         " << std::setw(8) << t_bh << " ms\n";
-        std::cout << "  Speedup:                 " << std::setw(8) << (t_direct / std::max(t_bh, 1e-6)) << "x\n";
-        std::cout << std::setprecision(4);
-        std::cout << "  Mean Relative Force Err: " << std::setw(8) << (sum_rel_err / n) * 100.0 << "%\n";
-        std::cout << "  Max  Relative Force Err: " << std::setw(8) << max_rel_err * 100.0 << "%\n";
-        std::cout << "--------------------------------------------\n\n";
     }
 
     if (n <= 4096 && mpi.is_root() && !mpi.enabled) {
@@ -213,7 +413,6 @@ int main(int argc, char** argv) {
             // Distributed Locally Essential Tree (LET) cycle
             BoundingBox g_box = mpi.global_bounding_box(ps);
             mpi.migrate_particles(ps, g_box);
-            auto remote_multipoles = mpi.exchange_multipoles(ps, g_box);
 
             if (use_direct) {
                 backend->direct_compute_forces(ps, g_val, eps_sq);
@@ -221,23 +420,43 @@ int main(int argc, char** argv) {
                 backend->compute_forces(ps, theta, g_val, eps_sq);
             }
 
-            // Accumulate gravitational forces from coarse remote multipoles
-            for (const auto& rm : remote_multipoles) {
-                if (rm.mass <= 0.0f) continue;
-                for (size_t i = 0; i < ps.count; i++) {
-                    float dx = rm.com_x - ps.x[i];
-                    float dy = rm.com_y - ps.y[i];
-                    float dz = rm.com_z - ps.z[i];
-                    float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+            // Extract and exchange coarse subtree multipoles
+            std::vector<RemoteMultipole> local_coarse;
+            backend->extract_coarse_nodes(2, mpi.rank, local_coarse);
+            auto remote_multipoles = mpi.exchange_multipoles(local_coarse);
 
-                    float inv_dist = 1.0f / std::sqrt(dist_sq);
-                    float inv_cube = inv_dist * inv_dist * inv_dist;
-                    float scale = g_val * rm.mass * inv_cube;
+            // Accumulate gravitational forces from coarse remote nodes
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+            for (size_t i = 0; i < ps.count; i++) {
+                const float xi = ps.x[i];
+                const float yi = ps.y[i];
+                const float zi = ps.z[i];
 
-                    ps.ax[i] += scale * dx;
-                    ps.ay[i] += scale * dy;
-                    ps.az[i] += scale * dz;
+                float d_ax = 0.0f;
+                float d_ay = 0.0f;
+                float d_az = 0.0f;
+
+                for (const auto& rm : remote_multipoles) {
+                    if (rm.rank == mpi.rank || rm.mass <= 0.0f) continue;
+                    const float dx = rm.com_x - xi;
+                    const float dy = rm.com_y - yi;
+                    const float dz = rm.com_z - zi;
+                    const float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                    const float inv_dist = 1.0f / std::sqrt(dist_sq);
+                    const float inv_cube = inv_dist * inv_dist * inv_dist;
+                    const float scale = g_val * rm.mass * inv_cube;
+
+                    d_ax += scale * dx;
+                    d_ay += scale * dy;
+                    d_az += scale * dz;
                 }
+
+                ps.ax[i] += d_ax;
+                ps.ay[i] += d_ay;
+                ps.az[i] += d_az;
             }
         } else {
             if (use_direct) {

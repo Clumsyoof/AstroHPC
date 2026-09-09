@@ -61,25 +61,55 @@ __global__ void nbody_tile_kernel(const float4* __restrict__ pos_mass,
     }
 }
 
+CudaBackend::CudaBackend() : d_pos_mass(nullptr), d_acc(nullptr), capacity(0) {}
+
+CudaBackend::~CudaBackend() {
+    if (d_pos_mass) {
+        cudaFree(d_pos_mass);
+        d_pos_mass = nullptr;
+    }
+    if (d_acc) {
+        cudaFree(d_acc);
+        d_acc = nullptr;
+    }
+    capacity = 0;
+}
+
+void CudaBackend::ensure_capacity(size_t n) {
+    if (n <= capacity) return;
+
+    if (d_pos_mass) {
+        cudaFree(d_pos_mass);
+        d_pos_mass = nullptr;
+    }
+    if (d_acc) {
+        cudaFree(d_acc);
+        d_acc = nullptr;
+    }
+
+    size_t new_cap = (n * 3) / 2 + 1024;
+    CUDA_CHECK(cudaMalloc(&d_pos_mass, new_cap * sizeof(float4)));
+    CUDA_CHECK(cudaMalloc(&d_acc, new_cap * sizeof(float3)));
+    capacity = new_cap;
+}
+
 void CudaBackend::direct_compute_forces(ParticleSystem& ps, float G, float eps_sq) {
     if (ps.count == 0) return;
     int n = static_cast<int>(ps.count);
+
+    ensure_capacity(ps.count);
 
     std::vector<float4> h_pos_mass(n);
     for (int i = 0; i < n; i++) {
         h_pos_mass[i] = make_float4(ps.x[i], ps.y[i], ps.z[i], ps.m[i]);
     }
 
-    float4* d_pos_mass = nullptr;
-    float3* d_acc = nullptr;
-
-    CUDA_CHECK(cudaMalloc(&d_pos_mass, n * sizeof(float4)));
-    CUDA_CHECK(cudaMalloc(&d_acc, n * sizeof(float3)));
-
     CUDA_CHECK(cudaMemcpy(d_pos_mass, h_pos_mass.data(), n * sizeof(float4), cudaMemcpyHostToDevice));
 
     int grid_size = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    nbody_tile_kernel<<<grid_size, BLOCK_SIZE>>>(d_pos_mass, d_acc, n, G, eps_sq);
+    nbody_tile_kernel<<<grid_size, BLOCK_SIZE>>>(static_cast<float4*>(d_pos_mass),
+                                                 static_cast<float3*>(d_acc),
+                                                 n, G, eps_sq);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<float3> h_acc(n);
@@ -90,13 +120,17 @@ void CudaBackend::direct_compute_forces(ParticleSystem& ps, float G, float eps_s
         ps.ay[i] = h_acc[i].y;
         ps.az[i] = h_acc[i].z;
     }
-
-    CUDA_CHECK(cudaFree(d_pos_mass));
-    CUDA_CHECK(cudaFree(d_acc));
 }
 
 void CudaBackend::compute_forces(ParticleSystem& ps, float theta, float G, float eps_sq) {
-    (void)theta;
+    static bool warned_theta = false;
+    if (!warned_theta) {
+        std::fprintf(stderr,
+                     "[astrohpc CUDA] Note: CUDA backend executes shared-memory tiled all-pairs kernel; "
+                     "MAC theta=%.2f is bypassed (no GPU octree construction).\n",
+                     theta);
+        warned_theta = true;
+    }
     direct_compute_forces(ps, G, eps_sq);
 }
 

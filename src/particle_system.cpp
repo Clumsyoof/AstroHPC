@@ -8,6 +8,10 @@
 #include <numeric>
 #include <algorithm>
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -73,6 +77,9 @@ BoundingBox ParticleSystem::compute_bounding_box() const {
 
 void ParticleSystem::compute_morton_keys() {
     BoundingBox box = compute_bounding_box();
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         morton[i] = morton_encode_3d(x[i], y[i], z[i], box);
     }
@@ -132,6 +139,9 @@ void ParticleSystem::reset_accelerations() {
 }
 
 void ParticleSystem::integrate_symplectic(float dt) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         vx[i] += ax[i] * dt;
         vy[i] += ay[i] * dt;
@@ -144,6 +154,9 @@ void ParticleSystem::integrate_symplectic(float dt) {
 }
 
 void ParticleSystem::integrate_symplectic_reverse_pos(float dt) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         x[i] -= vx[i] * dt;
         y[i] -= vy[i] * dt;
@@ -152,6 +165,9 @@ void ParticleSystem::integrate_symplectic_reverse_pos(float dt) {
 }
 
 void ParticleSystem::integrate_symplectic_reverse_vel(float dt) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         vx[i] -= ax[i] * dt;
         vy[i] -= ay[i] * dt;
@@ -160,6 +176,9 @@ void ParticleSystem::integrate_symplectic_reverse_vel(float dt) {
 }
 
 void ParticleSystem::kick(float dt_half) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         vx[i] += ax[i] * dt_half;
         vy[i] += ay[i] * dt_half;
@@ -168,6 +187,9 @@ void ParticleSystem::kick(float dt_half) {
 }
 
 void ParticleSystem::drift(float dt) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         x[i] += vx[i] * dt;
         y[i] += vy[i] * dt;
@@ -179,11 +201,17 @@ void ParticleSystem::compute_energy(float G, float eps_sq, double& kinetic, doub
     double total_ke = 0.0;
     double total_pe = 0.0;
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for reduction(+:total_ke) schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         double v_sq = (double)vx[i] * vx[i] + (double)vy[i] * vy[i] + (double)vz[i] * vz[i];
         total_ke += 0.5 * (double)m[i] * v_sq;
     }
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for reduction(+:total_pe) schedule(guided)
+#endif
     for (size_t i = 0; i < count; i++) {
         float xi = x[i];
         float yi = y[i];
@@ -204,16 +232,31 @@ void ParticleSystem::compute_energy(float G, float eps_sq, double& kinetic, doub
 }
 
 void ParticleSystem::compute_momentum(double& px, double& py, double& pz) const {
-    px = py = pz = 0.0;
+    double t_px = 0.0;
+    double t_py = 0.0;
+    double t_pz = 0.0;
+
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for reduction(+:t_px, t_py, t_pz) schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
-        px += (double)m[i] * (double)vx[i];
-        py += (double)m[i] * (double)vy[i];
-        pz += (double)m[i] * (double)vz[i];
+        t_px += (double)m[i] * (double)vx[i];
+        t_py += (double)m[i] * (double)vy[i];
+        t_pz += (double)m[i] * (double)vz[i];
     }
+    px = t_px;
+    py = t_py;
+    pz = t_pz;
 }
 
 void ParticleSystem::compute_angular_momentum(double& lx, double& ly, double& lz) const {
-    lx = ly = lz = 0.0;
+    double t_lx = 0.0;
+    double t_ly = 0.0;
+    double t_lz = 0.0;
+
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for reduction(+:t_lx, t_ly, t_lz) schedule(static)
+#endif
     for (size_t i = 0; i < count; i++) {
         double mi = (double)m[i];
         double xi = (double)x[i];
@@ -223,10 +266,13 @@ void ParticleSystem::compute_angular_momentum(double& lx, double& ly, double& lz
         double vyi = (double)vy[i];
         double vzi = (double)vz[i];
 
-        lx += mi * (yi * vzi - zi * vyi);
-        ly += mi * (zi * vxi - xi * vzi);
-        lz += mi * (xi * vyi - yi * vxi);
+        t_lx += mi * (yi * vzi - zi * vyi);
+        t_ly += mi * (zi * vxi - xi * vzi);
+        t_lz += mi * (xi * vyi - yi * vxi);
     }
+    lx = t_lx;
+    ly = t_ly;
+    lz = t_lz;
 }
 
 void ParticleSystem::init_three_body() {

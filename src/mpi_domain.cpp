@@ -240,43 +240,90 @@ void MpiContext::migrate_particles(ParticleSystem& ps, const BoundingBox& global
 #endif
 }
 
-std::vector<RemoteMultipole> MpiContext::exchange_multipoles(const ParticleSystem& local_ps,
-                                                            const BoundingBox& local_bbox) const {
+std::vector<RemoteMultipole> MpiContext::exchange_multipoles(const std::vector<RemoteMultipole>& local_nodes) const {
     std::vector<RemoteMultipole> multipoles;
 #ifdef ASTRO_ENABLE_MPI
-    if (!enabled || size <= 1) return multipoles;
+    if (!enabled || size <= 1) return local_nodes;
 
-    RemoteMultipole my_node{};
-    my_node.mass = 0.0f;
-    my_node.com_x = my_node.com_y = my_node.com_z = 0.0f;
+    int local_count = static_cast<int>(local_nodes.size());
+    std::vector<int> recv_counts(size, 0);
+    MPI_Allgather(&local_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-    for (size_t i = 0; i < local_ps.count; i++) {
-        my_node.mass += local_ps.m[i];
-        my_node.com_x += local_ps.m[i] * local_ps.x[i];
-        my_node.com_y += local_ps.m[i] * local_ps.y[i];
-        my_node.com_z += local_ps.m[i] * local_ps.z[i];
+    std::vector<int> displs(size, 0);
+    int total_nodes = recv_counts[0];
+    for (int r = 1; r < size; r++) {
+        displs[r] = displs[r - 1] + recv_counts[r - 1];
+        total_nodes += recv_counts[r];
     }
 
-    if (my_node.mass > 0.0f) {
-        my_node.com_x /= my_node.mass;
-        my_node.com_y /= my_node.mass;
-        my_node.com_z /= my_node.mass;
+    if (total_nodes == 0) return multipoles;
+
+    multipoles.resize(total_nodes);
+
+    std::vector<int> recv_bytes(size), displ_bytes(size);
+    for (int r = 0; r < size; r++) {
+        recv_bytes[r] = recv_counts[r] * static_cast<int>(sizeof(RemoteMultipole));
+        displ_bytes[r] = displs[r] * static_cast<int>(sizeof(RemoteMultipole));
     }
+    int my_send_bytes = local_count * static_cast<int>(sizeof(RemoteMultipole));
 
-    my_node.cx = (local_bbox.min_x + local_bbox.max_x) * 0.5f;
-    my_node.cy = (local_bbox.min_y + local_bbox.max_y) * 0.5f;
-    my_node.cz = (local_bbox.min_z + local_bbox.max_z) * 0.5f;
-    my_node.half_size = local_bbox.max_extent() * 0.5f;
-
-    multipoles.resize(size);
-    MPI_Allgather(&my_node, sizeof(RemoteMultipole), MPI_BYTE,
-                  multipoles.data(), sizeof(RemoteMultipole), MPI_BYTE,
-                  MPI_COMM_WORLD);
+    MPI_Allgatherv(local_nodes.data(), my_send_bytes, MPI_BYTE,
+                   multipoles.data(), recv_bytes.data(), displ_bytes.data(), MPI_BYTE,
+                   MPI_COMM_WORLD);
 #else
-    (void)local_ps;
-    (void)local_bbox;
+    (void)local_nodes;
 #endif
     return multipoles;
+}
+
+std::vector<GlobalParticle> MpiContext::gather_all_particles(const ParticleSystem& ps, std::vector<int>& out_displs) const {
+    std::vector<GlobalParticle> all_particles;
+    out_displs.assign(size, 0);
+#ifdef ASTRO_ENABLE_MPI
+    if (!enabled || size <= 1) {
+        all_particles.resize(ps.count);
+        for (size_t i = 0; i < ps.count; i++) {
+            all_particles[i] = {ps.x[i], ps.y[i], ps.z[i], ps.m[i]};
+        }
+        return all_particles;
+    }
+
+    int local_n = static_cast<int>(ps.count);
+    std::vector<int> counts(size, 0);
+    MPI_Allgather(&local_n, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    int total_n = counts[0];
+    for (int r = 1; r < size; r++) {
+        out_displs[r] = out_displs[r - 1] + counts[r - 1];
+        total_n += counts[r];
+    }
+
+    std::vector<GlobalParticle> local_gp(ps.count);
+    for (size_t i = 0; i < ps.count; i++) {
+        local_gp[i] = {ps.x[i], ps.y[i], ps.z[i], ps.m[i]};
+    }
+
+    all_particles.resize(total_n);
+
+    std::vector<int> recv_bytes(size), displ_bytes(size);
+    for (int r = 0; r < size; r++) {
+        recv_bytes[r] = counts[r] * static_cast<int>(sizeof(GlobalParticle));
+        displ_bytes[r] = out_displs[r] * static_cast<int>(sizeof(GlobalParticle));
+    }
+    int send_bytes = local_n * static_cast<int>(sizeof(GlobalParticle));
+
+    MPI_Allgatherv(local_gp.data(), send_bytes, MPI_BYTE,
+                   all_particles.data(), recv_bytes.data(), displ_bytes.data(), MPI_BYTE,
+                   MPI_COMM_WORLD);
+#else
+    all_particles.resize(ps.count);
+    for (size_t i = 0; i < ps.count; i++) {
+        all_particles[i] = {ps.x[i], ps.y[i], ps.z[i], ps.m[i]};
+    }
+    (void)ps;
+    (void)out_displs;
+#endif
+    return all_particles;
 }
 
 } // namespace astro

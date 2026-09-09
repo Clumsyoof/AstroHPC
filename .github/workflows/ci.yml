@@ -26,6 +26,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            libopenmpi-dev \
+            openmpi-bin \
+            libomp-dev \
             libgl1-mesa-dev \
             libx11-dev \
             libxcursor-dev \
@@ -50,8 +53,14 @@ jobs:
       - name: Run HPC Test Suite via CTest
         run: ctest --test-dir build --output-on-failure
 
-      - name: Run Headless Engine Sanity Check
+      - name: Run Single-Node Baseline & OpenMP Sanity Check
         run: ./build/nbody_sim -n 512 -s 20 --compare
+
+      - name: Run MPI Multi-Rank Distributed LET Comparison (np=2)
+        run: mpirun --allow-run-as-root -np 2 ./build/nbody_sim -n 512 -s 10 --compare
+
+      - name: Run MPI Multi-Rank Distributed Simulation (np=4)
+        run: mpirun --allow-run-as-root -np 4 ./build/nbody_sim -n 1024 -s 10
 
       - name: Verify Snapshot Export Pipeline
         run: ./build/nbody_sim -n 128 -s 10 --dump /tmp/ci_snapshots --dump-interval 2

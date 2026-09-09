@@ -21,7 +21,9 @@ public:
 
     void compute_forces(ParticleSystem& ps, float theta, float G, float eps_sq) override;
     void direct_compute_forces(ParticleSystem& ps, float G, float eps_sq) override;
+    void extract_coarse_nodes(int max_depth, int owner_rank, std::vector<RemoteMultipole>& out) override;
 
+    int build_tree(const ParticleSystem& ps);
     int get_node_count() const { return static_cast<int>(nodes.size()); }
     const std::vector<CpuOctNode>& get_nodes() const { return nodes; }
 
@@ -32,7 +34,6 @@ private:
     void reset_pool();
     int alloc_node(float cx, float cy, float cz, float half_size);
     int insert_particle(const ParticleSystem& ps, int node_idx, int body_idx, int depth);
-    int build_tree(const ParticleSystem& ps);
 };
 
 } // namespace astro

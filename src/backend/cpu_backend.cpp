@@ -2,6 +2,10 @@
 #include <cmath>
 #include <algorithm>
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#include <omp.h>
+#endif
+
 namespace astro {
 
 #ifndef MAX_OCTREE_DEPTH
@@ -167,6 +171,95 @@ void CpuBackend::compute_forces(ParticleSystem& ps, float theta, float G, float 
     build_tree(ps);
     if (nodes.empty()) return;
 
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel
+    {
+        std::vector<int> stack;
+        stack.reserve(512);
+
+#pragma omp for schedule(guided)
+        for (size_t i = 0; i < ps.count; i++) {
+            const float xi = ps.x[i];
+            const float yi = ps.y[i];
+            const float zi = ps.z[i];
+
+            float ax = 0.0f;
+            float ay = 0.0f;
+            float az = 0.0f;
+
+            stack.clear();
+            stack.push_back(0); // Root node
+
+            while (!stack.empty()) {
+                const int node_idx = stack.back();
+                stack.pop_back();
+
+                const CpuOctNode& node = nodes[node_idx];
+                if (node.mass <= 0.0f) continue;
+
+                // Direct leaf interaction (iterates all bodies in terminal bucket)
+                if (node.body_idx >= 0) {
+                    int b = node.body_idx;
+                    while (b != -1) {
+                        if (b != static_cast<int>(i)) {
+                            const float dx = ps.x[b] - xi;
+                            const float dy = ps.y[b] - yi;
+                            const float dz = ps.z[b] - zi;
+                            const float dist_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+
+                            const float inv_dist = 1.0f / std::sqrt(dist_sq);
+                            const float inv_cube = inv_dist * inv_dist * inv_dist;
+                            const float s = G * ps.m[b] * inv_cube;
+
+                            ax += s * dx;
+                            ay += s * dy;
+                            az += s * dz;
+                        }
+                        b = next_body[b];
+                    }
+                    continue;
+                }
+
+                // Prevent self-interaction in internal nodes:
+                // If the node contains the target particle, the particle's own mass is part of node.mass.
+                // Accepting the node via MAC would cause an unphysical self-attraction force!
+                const bool contains_target = (std::abs(node.cx - xi) <= node.half_size) &&
+                                             (std::abs(node.cy - yi) <= node.half_size) &&
+                                             (std::abs(node.cz - zi) <= node.half_size);
+
+                const float dx = node.com_x - xi;
+                const float dy = node.com_y - yi;
+                const float dz = node.com_z - zi;
+                const float dist_sq = dx * dx + dy * dy + dz * dz;
+                const float dist = std::sqrt(dist_sq);
+
+                // MAC: Multipole Acceptance Criterion (size / dist < theta)
+                if (!contains_target && ((2.0f * node.half_size) < theta * dist)) {
+                    const float dist_sq_soft = dist_sq + eps_sq;
+                    const float inv_dist = 1.0f / std::sqrt(dist_sq_soft);
+                    const float inv_cube = inv_dist * inv_dist * inv_dist;
+                    const float s = G * node.mass * inv_cube;
+
+                    ax += s * dx;
+                    ay += s * dy;
+                    az += s * dz;
+                } else {
+                    // Criterion fails or node contains target: force traversal of children
+                    for (int c = 0; c < 8; c++) {
+                        const int child_idx = node.children[c];
+                        if (child_idx != -1 && nodes[child_idx].mass > 0.0f) {
+                            stack.push_back(child_idx);
+                        }
+                    }
+                }
+            }
+
+            ps.ax[i] = ax;
+            ps.ay[i] = ay;
+            ps.az[i] = az;
+        }
+    }
+#else
     std::vector<int> stack;
     stack.reserve(512);
 
@@ -212,9 +305,6 @@ void CpuBackend::compute_forces(ParticleSystem& ps, float theta, float G, float 
                 continue;
             }
 
-            // Prevent self-interaction in internal nodes:
-            // If the node contains the target particle, the particle's own mass is part of node.mass.
-            // Accepting the node via MAC would cause an unphysical self-attraction force!
             const bool contains_target = (std::abs(node.cx - xi) <= node.half_size) &&
                                          (std::abs(node.cy - yi) <= node.half_size) &&
                                          (std::abs(node.cz - zi) <= node.half_size);
@@ -225,7 +315,6 @@ void CpuBackend::compute_forces(ParticleSystem& ps, float theta, float G, float 
             const float dist_sq = dx * dx + dy * dy + dz * dz;
             const float dist = std::sqrt(dist_sq);
 
-            // MAC: Multipole Acceptance Criterion (size / dist < theta)
             if (!contains_target && ((2.0f * node.half_size) < theta * dist)) {
                 const float dist_sq_soft = dist_sq + eps_sq;
                 const float inv_dist = 1.0f / std::sqrt(dist_sq_soft);
@@ -236,7 +325,6 @@ void CpuBackend::compute_forces(ParticleSystem& ps, float theta, float G, float 
                 ay += s * dy;
                 az += s * dz;
             } else {
-                // Criterion fails or node contains target: force traversal of children
                 for (int c = 0; c < 8; c++) {
                     const int child_idx = node.children[c];
                     if (child_idx != -1 && nodes[child_idx].mass > 0.0f) {
@@ -250,9 +338,13 @@ void CpuBackend::compute_forces(ParticleSystem& ps, float theta, float G, float 
         ps.ay[i] = ay;
         ps.az[i] = az;
     }
+#endif
 }
 
 void CpuBackend::direct_compute_forces(ParticleSystem& ps, float G, float eps_sq) {
+#if defined(ASTRO_ENABLE_OPENMP) || defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < ps.count; i++) {
         const float xi = ps.x[i];
         const float yi = ps.y[i];
@@ -282,6 +374,56 @@ void CpuBackend::direct_compute_forces(ParticleSystem& ps, float G, float eps_sq
         ps.ay[i] = ay;
         ps.az[i] = az;
     }
+}
+
+void CpuBackend::extract_coarse_nodes(int max_depth, int owner_rank, std::vector<RemoteMultipole>& out) {
+    out.clear();
+    if (nodes.empty()) return;
+
+    auto dfs = [&](auto& self, int node_idx, int depth) -> void {
+        if (node_idx < 0 || node_idx >= static_cast<int>(nodes.size())) return;
+        const CpuOctNode& node = nodes[node_idx];
+        if (node.mass <= 0.0f) return;
+
+        bool is_leaf = (node.body_idx >= 0);
+        bool has_valid_children = false;
+        if (!is_leaf) {
+            for (int c = 0; c < 8; c++) {
+                int child = node.children[c];
+                if (child != -1 && child < static_cast<int>(nodes.size()) && nodes[child].mass > 0.0f) {
+                    has_valid_children = true;
+                    break;
+                }
+            }
+        }
+
+        // If maximum coarse depth is reached, or leaf reached, or no valid children:
+        // this node forms a leaf of the coarse cut.
+        if (depth >= max_depth || is_leaf || !has_valid_children) {
+            RemoteMultipole rm;
+            rm.com_x = node.com_x;
+            rm.com_y = node.com_y;
+            rm.com_z = node.com_z;
+            rm.mass = node.mass;
+            rm.half_size = node.half_size;
+            rm.cx = node.cx;
+            rm.cy = node.cy;
+            rm.cz = node.cz;
+            rm.rank = owner_rank;
+            out.push_back(rm);
+            return;
+        }
+
+        // Otherwise descend into children
+        for (int c = 0; c < 8; c++) {
+            int child = node.children[c];
+            if (child != -1 && child < static_cast<int>(nodes.size()) && nodes[child].mass > 0.0f) {
+                self(self, child, depth + 1);
+            }
+        }
+    };
+
+    dfs(dfs, 0, 0);
 }
 
 } // namespace astro
