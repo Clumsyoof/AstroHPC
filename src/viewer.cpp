@@ -1,5 +1,6 @@
 #include <raylib.h>
 #include <raymath.h>
+#include <rlgl.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -93,6 +94,46 @@ static Color get_velocity_color(float speed, float max_speed) {
     }
 }
 
+static Color get_celestial_color(const std::string& name, size_t index, astro::DatasetUnits units, float speed, float max_speed) {
+    if (!name.empty()) {
+        std::string lower = name;
+        for (char& c : lower) c = (char)tolower((unsigned char)c);
+
+        if (lower.find("sun") != std::string::npos)     return (Color){ 255, 230, 70, 255 };
+        if (lower.find("mercury") != std::string::npos) return (Color){ 190, 190, 195, 255 };
+        if (lower.find("venus") != std::string::npos)   return (Color){ 235, 215, 170, 255 };
+        if (lower.find("earth") != std::string::npos)   return (Color){ 90, 160, 245, 255 };
+        if (lower.find("moon") != std::string::npos)    return (Color){ 195, 195, 205, 255 };
+        if (lower.find("mars") != std::string::npos)    return (Color){ 235, 95, 65, 255 };
+        if (lower.find("jupiter") != std::string::npos) return (Color){ 225, 175, 120, 255 };
+        if (lower.find("saturn") != std::string::npos)  return (Color){ 235, 215, 150, 255 };
+        if (lower.find("uranus") != std::string::npos)  return (Color){ 140, 220, 235, 255 };
+        if (lower.find("neptune") != std::string::npos) return (Color){ 70, 110, 245, 255 };
+        if (lower.find("pluto") != std::string::npos)   return (Color){ 175, 155, 145, 255 };
+    }
+
+    if (units == astro::DatasetUnits::SolarSystem) {
+        static const Color default_solar_colors[] = {
+            (Color){ 255, 230, 70, 255 },   // 0: Sun
+            (Color){ 190, 190, 195, 255 },  // 1: Mercury
+            (Color){ 235, 215, 170, 255 },  // 2: Venus
+            (Color){ 90, 160, 245, 255 },   // 3: Earth
+            (Color){ 195, 195, 205, 255 },  // 4: Moon
+            (Color){ 235, 95, 65, 255 },    // 5: Mars
+            (Color){ 225, 175, 120, 255 },  // 6: Jupiter
+            (Color){ 235, 215, 150, 255 },  // 7: Saturn
+            (Color){ 140, 220, 235, 255 },  // 8: Uranus
+            (Color){ 70, 110, 245, 255 },   // 9: Neptune
+            (Color){ 175, 155, 145, 255 },  // 10: Pluto
+        };
+        if (index < sizeof(default_solar_colors) / sizeof(default_solar_colors[0])) {
+            return default_solar_colors[index];
+        }
+    }
+
+    return get_velocity_color(speed, max_speed);
+}
+
 static void draw_octree_wires_recursive(const std::vector<astro::CpuOctNode>& nodes, int node_idx) {
     if (node_idx < 0 || node_idx >= static_cast<int>(nodes.size())) return;
     const auto& node = nodes[node_idx];
@@ -155,7 +196,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--real") == 0 || strcmp(argv[i], "--irl") == 0) {
             sim_g = G_IRL_ASTRO;
             g_custom = 1;
-        } else if ((strcmp(argv[i], "-dt") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
+        } else if (strcmp(argv[i], "-dt") == 0 && i + 1 < argc) {
             sim_dt = (float)atof(argv[++i]);
             dt_custom = 1;
         } else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
@@ -193,18 +234,6 @@ int main(int argc, char **argv) {
         if (!g_custom) sim_g = g_sys.default_g();
         if (!eps_custom) sim_eps_sq = g_sys.default_eps_sq();
         if (!dt_custom) sim_dt = g_sys.default_dt();
-        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-            cam_distance = 6.0f;
-            cam_pitch = 0.55f;
-            live_speed = 3.0f;
-        } else {
-            cam_distance = 45.0f;
-        }
-    }
-
-    std::vector<std::vector<Vector3>> trails;
-    if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-        trails.resize(g_sys.count);
     }
 
     if (!snapshot_mode) {
@@ -214,86 +243,160 @@ int main(int argc, char **argv) {
         g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
     }
 
-    int track_target = 0; // Solar system mode: 0 = Sun, 1 = Mercury, etc. -1 = Free Pan
+    // Compute characteristic spatial scale of the dataset
+    float max_r = 1.0f;
+    for (size_t i = 0; i < g_sys.count; i++) {
+        float r = sqrtf(g_sys.x[i] * g_sys.x[i] + g_sys.y[i] * g_sys.y[i] + g_sys.z[i] * g_sys.z[i]);
+        if (r > max_r) max_r = r;
+    }
+    cam_distance = max_r * 1.5f;
+    float min_cam_dist = fmaxf(max_r * 0.00002f, 0.0001f);
+    float max_cam_dist = max_r * 4.0f;
+    int tracked_idx = -1; // -1 = free camera target, >= 0 = locked to a particle
+    static Vector2 mouse_click_pos = { 0, 0 };
+    static bool mouse_was_pressed = false;
+
+    std::vector<std::vector<Vector3>> trails;
+    if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+        trails.resize(g_sys.count);
+    }
 
     while (!WindowShouldClose()) {
-        // Camera presets and tracking for Solar System
-        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-            if (IsKeyPressed(KEY_ONE)) {
-                // View Inner Planets (Sun, Mercury, Venus, Earth, Mars)
-                track_target = 0;
-                cam_distance = 3.5f;
-                cam_pitch = 0.55f;
-            }
-            if (IsKeyPressed(KEY_TWO)) {
-                // View Full Solar System (out to Pluto)
-                track_target = 0;
-                cam_distance = 55.0f;
-                cam_pitch = 0.75f;
-            }
-            if (IsKeyPressed(KEY_TAB)) {
-                // Cycle tracking through planets
-                track_target = (track_target + 1) % static_cast<int>(g_sys.count);
-                if (track_target != 0 && cam_distance > 5.0f) {
-                    cam_distance = 1.8f;
-                }
-            }
-            if (IsKeyPressed(KEY_C)) {
-                // Re-center on Sun
-                track_target = 0;
-            }
-        }
+        int screenWidth = GetScreenWidth();
+        int screenHeight = GetScreenHeight();
 
-        // Left Click: Orbit
+        // 1. Orbit (Left Click Drag)
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             Vector2 delta = GetMouseDelta();
             cam_yaw -= delta.x * 0.005f;
             cam_pitch += delta.y * 0.005f;
-            if (cam_pitch > 1.55f) cam_pitch = 1.55f;
-            if (cam_pitch < -1.55f) cam_pitch = -1.55f;
+            // Clamp pitch to avoid gimbal lock flip at poles
+            if (cam_pitch > 1.45f) cam_pitch = 1.45f;
+            if (cam_pitch < -1.45f) cam_pitch = -1.45f;
         }
 
-        // Right/Middle Click: Pan
+        // 2. Click to Focus on Any Particle (Left Click Release without Drag)
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            mouse_click_pos = GetMousePosition();
+            mouse_was_pressed = true;
+        }
+        if (mouse_was_pressed && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            mouse_was_pressed = false;
+            Vector2 release_pos = GetMousePosition();
+            float drag_len = sqrtf((release_pos.x - mouse_click_pos.x) * (release_pos.x - mouse_click_pos.x) +
+                                   (release_pos.y - mouse_click_pos.y) * (release_pos.y - mouse_click_pos.y));
+            if (drag_len < 5.0f) {
+                // Find closest particle in front of camera
+                Vector3 cam_fwd = { camera.target.x - camera.position.x,
+                                    camera.target.y - camera.position.y,
+                                    camera.target.z - camera.position.z };
+                int best_i = -1;
+                float best_d = 24.0f;
+                for (size_t i = 0; i < g_sys.count; i++) {
+                    Vector3 p = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                    Vector3 to_p = { p.x - camera.position.x, p.y - camera.position.y, p.z - camera.position.z };
+                    if (to_p.x * cam_fwd.x + to_p.y * cam_fwd.y + to_p.z * cam_fwd.z <= 0.0f) continue;
+
+                    Vector2 s = GetWorldToScreen(p, camera);
+                    if (s.x > 0 && s.x < screenWidth && s.y > 0 && s.y < screenHeight) {
+                        float d = sqrtf((release_pos.x - s.x) * (release_pos.x - s.x) + (release_pos.y - s.y) * (release_pos.y - s.y));
+                        if (d < best_d) {
+                            best_d = d;
+                            best_i = static_cast<int>(i);
+                        }
+                    }
+                }
+                if (best_i >= 0) {
+                    tracked_idx = best_i;
+                    if (cam_distance > max_r * 0.15f) {
+                        cam_distance = max_r * 0.05f;
+                    }
+                }
+            }
+        }
+
+        // 3. Pan (Right Click / Middle Click Drag)
         if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
-            track_target = -1; // disable tracking on manual pan
+            tracked_idx = -1; // Detach tracking on manual pan
             Vector2 delta = GetMouseDelta();
             float sin_yaw = sinf(cam_yaw);
             float cos_yaw = cosf(cam_yaw);
             Vector3 right = { cos_yaw, 0.0f, -sin_yaw };
-            float pan_speed = cam_distance * 0.0015f;
+            float pan_speed = fmaxf(cam_distance * 0.0015f, min_cam_dist * 0.5f);
+            if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) pan_speed *= 4.0f;
             cam_target.x -= right.x * delta.x * pan_speed;
             cam_target.y += delta.y * pan_speed;
             cam_target.z -= right.z * delta.x * pan_speed;
         }
 
-        // Mouse Wheel Zoom
-        float min_cam_dist = (g_sys.units == astro::DatasetUnits::SolarSystem) ? 0.05f : 5.0f;
+        // 4. WASD Keyboard Fly/Pan Controls
+        float key_speed = fmaxf(cam_distance * 0.015f, min_cam_dist);
+        if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) key_speed *= 3.0f;
+        Vector3 cam_fwd_dir = { sinf(cam_yaw) * cosf(cam_pitch), -sinf(cam_pitch), cosf(cam_yaw) * cosf(cam_pitch) };
+        Vector3 cam_rgt_dir = { cosf(cam_yaw), 0.0f, -sinf(cam_yaw) };
+        bool key_moved = false;
+        if (IsKeyDown(KEY_W)) { cam_target.x += cam_fwd_dir.x * key_speed; cam_target.y += cam_fwd_dir.y * key_speed; cam_target.z += cam_fwd_dir.z * key_speed; key_moved = true; }
+        if (IsKeyDown(KEY_S)) { cam_target.x -= cam_fwd_dir.x * key_speed; cam_target.y -= cam_fwd_dir.y * key_speed; cam_target.z -= cam_fwd_dir.z * key_speed; key_moved = true; }
+        if (IsKeyDown(KEY_A)) { cam_target.x -= cam_rgt_dir.x * key_speed; cam_target.y -= cam_rgt_dir.y * key_speed; cam_target.z -= cam_rgt_dir.z * key_speed; key_moved = true; }
+        if (IsKeyDown(KEY_D)) { cam_target.x += cam_rgt_dir.x * key_speed; cam_target.y += cam_rgt_dir.y * key_speed; cam_target.z += cam_rgt_dir.z * key_speed; key_moved = true; }
+        if (key_moved) tracked_idx = -1;
+
+        // 5. Stable Exponential Zoom (Mouse Wheel)
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
-            cam_distance -= wheel * (cam_distance * 0.08f);
+            cam_distance *= powf(0.88f, wheel);
             if (cam_distance < min_cam_dist) cam_distance = min_cam_dist;
-            if (cam_distance > 5000.0f) cam_distance = 5000.0f;
+            if (cam_distance > max_cam_dist) cam_distance = max_cam_dist;
         }
 
-        if (track_target >= 0 && track_target < static_cast<int>(g_sys.count)) {
-            cam_target = (Vector3){ g_sys.x[track_target], g_sys.y[track_target], g_sys.z[track_target] };
-            if (track_target == 4 && g_sys.count > 4) { // Moon tracking offset
-                float mdx = g_sys.x[4] - g_sys.x[3];
-                float mdy = g_sys.y[4] - g_sys.y[3];
-                float mdz = g_sys.z[4] - g_sys.z[3];
-                float md = sqrtf(mdx*mdx + mdy*mdy + mdz*mdz);
-                if (md > 1e-5f) {
-                    cam_target.x = g_sys.x[3] + (mdx / md) * 0.045f;
-                    cam_target.y = g_sys.y[3] + (mdy / md) * 0.045f;
-                    cam_target.z = g_sys.z[3] + (mdz / md) * 0.045f;
+        // 6. Focus Key (F) on hovered particle, Center Key (C), and Cycle Key (TAB)
+        if (IsKeyPressed(KEY_F)) {
+            Vector2 mpos = GetMousePosition();
+            Vector3 cam_fwd = { camera.target.x - camera.position.x,
+                                camera.target.y - camera.position.y,
+                                camera.target.z - camera.position.z };
+            int best_i = -1;
+            float best_d = 40.0f;
+            for (size_t i = 0; i < g_sys.count; i++) {
+                Vector3 p = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                Vector3 to_p = { p.x - camera.position.x, p.y - camera.position.y, p.z - camera.position.z };
+                if (to_p.x * cam_fwd.x + to_p.y * cam_fwd.y + to_p.z * cam_fwd.z <= 0.0f) continue;
+
+                Vector2 s = GetWorldToScreen(p, camera);
+                if (s.x > 0 && s.x < screenWidth && s.y > 0 && s.y < screenHeight) {
+                    float d = sqrtf((mpos.x - s.x) * (mpos.x - s.x) + (mpos.y - s.y) * (mpos.y - s.y));
+                    if (d < best_d) {
+                        best_d = d;
+                        best_i = static_cast<int>(i);
+                    }
+                }
+            }
+            if (best_i >= 0) {
+                tracked_idx = best_i;
+                if (cam_distance > max_r * 0.15f) {
+                    cam_distance = max_r * 0.05f;
                 }
             }
         }
 
-        camera.target = cam_target;
-        camera.position.x = cam_target.x + cam_distance * cosf(cam_pitch) * sinf(cam_yaw);
-        camera.position.y = cam_target.y + cam_distance * sinf(cam_pitch);
-        camera.position.z = cam_target.z + cam_distance * cosf(cam_pitch) * cosf(cam_yaw);
+        if (IsKeyPressed(KEY_C)) {
+            tracked_idx = -1;
+            cam_target = (Vector3){ 0.0f, 0.0f, 0.0f };
+            cam_distance = max_r * 1.5f;
+        }
+
+        if (IsKeyPressed(KEY_TAB)) {
+            if (g_sys.count > 0) {
+                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
+                    tracked_idx = (tracked_idx - 1 + static_cast<int>(g_sys.count)) % static_cast<int>(g_sys.count);
+                } else {
+                    tracked_idx = (tracked_idx + 1) % static_cast<int>(g_sys.count);
+                }
+                if (cam_distance > max_r * 0.15f) {
+                    cam_distance = max_r * 0.05f;
+                }
+            }
+        }
 
         // Input controls
         if (IsKeyPressed(KEY_SPACE)) {
@@ -302,7 +405,6 @@ int main(int argc, char **argv) {
         }
 
         if (IsKeyPressed(KEY_R)) {
-            for (auto& tr : trails) tr.clear();
             if (snapshot_mode) {
                 sm.current_index = 0;
                 astro::read_snapshot(sm.files[0], g_sys, &sm.current_header);
@@ -316,6 +418,7 @@ int main(int argc, char **argv) {
                 }
                 g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
             }
+            for (auto& t : trails) t.clear();
         }
 
         if (IsKeyPressed(KEY_O)) {
@@ -363,11 +466,8 @@ int main(int argc, char **argv) {
             }
 
             if (!live_paused) {
-                int substeps = (g_sys.units == astro::DatasetUnits::SolarSystem)
-                               ? static_cast<int>(live_speed * 4.0f)
-                               : ((live_speed >= 2.0f) ? static_cast<int>(live_speed) : 1);
-                if (substeps < 1) substeps = 1;
-                float dt_step = sim_dt * (live_speed / static_cast<float>(substeps));
+                int substeps = (live_speed >= 2.0f) ? (int)live_speed : 1;
+                float dt_step = sim_dt * (live_speed / (float)substeps);
                 for (int s = 0; s < substeps; s++) {
                     g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
                     g_sys.integrate_symplectic(dt_step);
@@ -375,131 +475,169 @@ int main(int argc, char **argv) {
                 if (g_sys.units == astro::DatasetUnits::SolarSystem) {
                     if (trails.size() != g_sys.count) trails.resize(g_sys.count);
                     for (size_t i = 1; i < g_sys.count; i++) {
-                        Vector3 pt = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
-                        if (i == 4 && g_sys.count > 4) { // Moon visual offset from Earth
-                            float mdx = g_sys.x[4] - g_sys.x[3];
-                            float mdy = g_sys.y[4] - g_sys.y[3];
-                            float mdz = g_sys.z[4] - g_sys.z[3];
-                            float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
-                            if (md > 1e-5f) {
-                                pt.x = g_sys.x[3] + (mdx / md) * 0.045f;
-                                pt.y = g_sys.y[3] + (mdy / md) * 0.045f;
-                                pt.z = g_sys.z[3] + (mdz / md) * 0.045f;
-                            }
-                        }
-                        trails[i].push_back(pt);
-                        if (trails[i].size() > 400) {
-                            trails[i].erase(trails[i].begin());
-                        }
+                        trails[i].push_back((Vector3){ g_sys.x[i], g_sys.y[i], g_sys.z[i] });
+                        if (trails[i].size() > 500) trails[i].erase(trails[i].begin());
                     }
                 }
             } else {
                 if (IsKeyPressed(KEY_RIGHT)) {
                     g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
                     g_sys.integrate_symplectic(sim_dt);
+                    if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+                        if (trails.size() != g_sys.count) trails.resize(g_sys.count);
+                        for (size_t i = 1; i < g_sys.count; i++) {
+                            trails[i].push_back((Vector3){ g_sys.x[i], g_sys.y[i], g_sys.z[i] });
+                            if (trails[i].size() > 500) trails[i].erase(trails[i].begin());
+                        }
+                    }
                 }
                 if (IsKeyPressed(KEY_LEFT)) {
                     g_sys.integrate_symplectic_reverse_pos(sim_dt);
                     g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
                     g_sys.integrate_symplectic_reverse_vel(sim_dt);
+                    if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+                        for (size_t i = 1; i < trails.size(); i++) {
+                            if (!trails[i].empty()) trails[i].pop_back();
+                        }
+                    }
                 }
             }
         }
+
+        // Update tracking target and camera right before rendering so physics is in sync
+        if (tracked_idx >= 0 && tracked_idx < static_cast<int>(g_sys.count)) {
+            cam_target = (Vector3){ g_sys.x[tracked_idx], g_sys.y[tracked_idx], g_sys.z[tracked_idx] };
+        }
+
+        camera.target = cam_target;
+        camera.position.x = cam_target.x + cam_distance * cosf(cam_pitch) * sinf(cam_yaw);
+        camera.position.y = cam_target.y + cam_distance * sinf(cam_pitch);
+        camera.position.z = cam_target.z + cam_distance * cosf(cam_pitch) * cosf(cam_yaw);
+
+        // Dynamically adjust clipping planes to avoid clipping at near and far scales
+        rlSetClipPlanes(fmaxf(cam_distance * 0.001f, 0.0001f), fmaxf(max_cam_dist * 3.0f, 5000.0f));
 
         BeginDrawing();
         ClearBackground((Color){ 10, 10, 16, 255 });
 
         BeginMode3D(camera);
 
-        static const std::vector<Color> solar_colors = {
-            (Color){ 255, 230, 70, 255 },  // 0: Sun
-            (Color){ 190, 190, 195, 255 },  // 1: Mercury
-            (Color){ 235, 215, 170, 255 },  // 2: Venus
-            (Color){ 90, 160, 245, 255 },   // 3: Earth
-            (Color){ 180, 180, 190, 255 },  // 4: Moon
-            (Color){ 235, 95, 65, 255 },    // 5: Mars
-            (Color){ 225, 175, 120, 255 },  // 6: Jupiter
-            (Color){ 235, 215, 150, 255 },  // 7: Saturn
-            (Color){ 140, 220, 235, 255 },  // 8: Uranus
-            (Color){ 70, 110, 245, 255 },   // 9: Neptune
-            (Color){ 175, 155, 145, 255 },  // 10: Pluto
-        };
-
-        // Realistic proportions in AU: Mercury perihelion is ~0.307 AU, so Sun at 0.080 AU leaves vast empty space
-        static const std::vector<float> solar_radii = {
-            0.080f,  // 0: Sun
-            0.016f,  // 1: Mercury (distance 0.387 AU)
-            0.024f,  // 2: Venus (distance 0.723 AU)
-            0.026f,  // 3: Earth (distance 1.000 AU)
-            0.010f,  // 4: Moon (orbiting Earth)
-            0.020f,  // 5: Mars (distance 1.524 AU)
-            0.065f,  // 6: Jupiter (distance 5.204 AU)
-            0.055f,  // 7: Saturn (distance 9.582 AU)
-            0.040f,  // 8: Uranus (distance 19.20 AU)
-            0.040f,  // 9: Neptune (distance 30.05 AU)
-            0.015f   // 10: Pluto (distance 39.48 AU)
-        };
-
+        // Draw Keplerian orbit trails in Solar System mode
         if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-            // Draw Keplerian orbit trails
-            for (size_t i = 1; i < trails.size(); i++) {
+            for (size_t i = 1; i < trails.size() && i < g_sys.count; i++) {
                 const auto& tr = trails[i];
                 if (tr.size() < 2) continue;
-                Color col = (i < solar_colors.size()) ? solar_colors[i] : SKYBLUE;
+                const std::string name = (i < g_sys.names.size()) ? g_sys.names[i] : "";
+                Color tc = get_celestial_color(name, i, g_sys.units, 0.0f, 1.0f);
                 for (size_t p = 1; p < tr.size(); p++) {
                     float alpha = (float)p / (float)tr.size();
-                    DrawLine3D(tr[p - 1], tr[p], ColorAlpha(col, alpha * 0.55f));
+                    DrawLine3D(tr[p - 1], tr[p], ColorAlpha(tc, alpha * 0.55f));
                 }
             }
+        }
 
-            // Draw solar system bodies
-            for (size_t i = 0; i < g_sys.count; i++) {
-                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
-                if (i == 4 && g_sys.count > 4) { // Moon visual offset
-                    float mdx = g_sys.x[4] - g_sys.x[3];
-                    float mdy = g_sys.y[4] - g_sys.y[3];
-                    float mdz = g_sys.z[4] - g_sys.z[3];
-                    float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
-                    if (md > 1e-5f) {
-                        pos.x = g_sys.x[3] + (mdx / md) * 0.045f;
-                        pos.y = g_sys.y[3] + (mdy / md) * 0.045f;
-                        pos.z = g_sys.z[3] + (mdz / md) * 0.045f;
+        float max_speed = 5.0f;
+        for (size_t i = 0; i < g_sys.count; i += 16) {
+            float s = sqrtf(g_sys.vx[i] * g_sys.vx[i] + g_sys.vy[i] * g_sys.vy[i] + g_sys.vz[i] * g_sys.vz[i]);
+            if (s > max_speed) max_speed = s;
+        }
+
+        // Base particle size dynamically proportioned to scene scale
+        float base_sz = max_r * 0.0018f;
+        if (base_sz < 0.015f) base_sz = 0.015f;
+
+        for (size_t i = 0; i < g_sys.count; i++) {
+            Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+            float spd = sqrtf(g_sys.vx[i] * g_sys.vx[i] + g_sys.vy[i] * g_sys.vy[i] + g_sys.vz[i] * g_sys.vz[i]);
+            const std::string name = (i < g_sys.names.size()) ? g_sys.names[i] : "";
+            Color c = get_celestial_color(name, i, g_sys.units, spd, max_speed);
+
+            float m = g_sys.m[i];
+
+            if (g_sys.count < 150) {
+                // Few-body / Solar system: render smooth spheres
+                float sz;
+                if (i == 0 && m >= 0.5f) {
+                    sz = base_sz * 1.0f;
+                    DrawSphere(pos, sz, c);
+                    DrawSphereWires(pos, sz * 1.15f, 10, 10, (Color){ 255, 200, 50, 160 });
+                } else {
+                    sz = base_sz * (0.35f + cbrtf(fminf(fmaxf(m, 1e-6f), 1e-2f)) * 1.8f);
+                    DrawSphere(pos, sz, c);
+
+                    // Check for Saturn
+                    bool is_saturn = false;
+                    if (!name.empty()) {
+                        std::string lower = name;
+                        for (char& ch : lower) ch = (char)tolower((unsigned char)ch);
+                        if (lower.find("saturn") != std::string::npos) is_saturn = true;
+                    } else if (g_sys.units == astro::DatasetUnits::SolarSystem && i == 7) {
+                        is_saturn = true;
+                    }
+
+                    if (is_saturn) {
+                        // Saturn's tilted rings (26.7 deg axial tilt)
+                        const float tilt_rad = 26.7f * DEG2RAD;
+                        const Vector3 u1 = { 1.0f, 0.0f, 0.0f };
+                        const Vector3 u2 = { 0.0f, cosf(tilt_rad), sinf(tilt_rad) };
+
+                        const int ring_segments = 64;
+                        float r_in   = sz * 1.55f;
+                        float r_mid1 = sz * 1.95f;
+                        float r_mid2 = sz * 2.05f;
+                        float r_out  = sz * 2.45f;
+
+                        Color ring_col_b = (Color){ 230, 210, 160, 140 }; // Ring B (dense inner)
+                        Color ring_col_a = (Color){ 210, 190, 140, 110 }; // Ring A (outer)
+
+                        for (int s = 0; s < ring_segments; s++) {
+                            float a1 = (float)s / ring_segments * 2.0f * PI;
+                            float a2 = (float)(s + 1) / ring_segments * 2.0f * PI;
+                            float c1 = cosf(a1), s1 = sinf(a1);
+                            float c2 = cosf(a2), s2 = sinf(a2);
+
+                            Vector3 d1 = { c1 * u1.x + s1 * u2.x, c1 * u1.y + s1 * u2.y, c1 * u1.z + s1 * u2.z };
+                            Vector3 d2 = { c2 * u1.x + s2 * u2.x, c2 * u1.y + s2 * u2.y, c2 * u1.z + s2 * u2.z };
+
+                            // Ring B (inner band)
+                            Vector3 b_in1  = { pos.x + d1.x * r_in,   pos.y + d1.y * r_in,   pos.z + d1.z * r_in };
+                            Vector3 b_out1 = { pos.x + d1.x * r_mid1, pos.y + d1.y * r_mid1, pos.z + d1.z * r_mid1 };
+                            Vector3 b_in2  = { pos.x + d2.x * r_in,   pos.y + d2.y * r_in,   pos.z + d2.z * r_in };
+                            Vector3 b_out2 = { pos.x + d2.x * r_mid1, pos.y + d2.y * r_mid1, pos.z + d2.z * r_mid1 };
+
+                            DrawTriangle3D(b_in1, b_out1, b_in2, ring_col_b);
+                            DrawTriangle3D(b_out1, b_out2, b_in2, ring_col_b);
+                            DrawTriangle3D(b_in1, b_in2, b_out1, ring_col_b);
+                            DrawTriangle3D(b_out1, b_in2, b_out2, ring_col_b);
+
+                            // Ring A (outer band)
+                            Vector3 a_in1  = { pos.x + d1.x * r_mid2, pos.y + d1.y * r_mid2, pos.z + d1.z * r_mid2 };
+                            Vector3 a_out1 = { pos.x + d1.x * r_out,  pos.y + d1.y * r_out,  pos.z + d1.z * r_out };
+                            Vector3 a_in2  = { pos.x + d2.x * r_mid2, pos.y + d2.y * r_mid2, pos.z + d2.z * r_mid2 };
+                            Vector3 a_out2 = { pos.x + d2.x * r_out,  pos.y + d2.y * r_out,  pos.z + d2.z * r_out };
+
+                            DrawTriangle3D(a_in1, a_out1, a_in2, ring_col_a);
+                            DrawTriangle3D(a_out1, a_out2, a_in2, ring_col_a);
+                            DrawTriangle3D(a_in1, a_in2, a_out1, ring_col_a);
+                            DrawTriangle3D(a_out1, a_in2, a_out2, ring_col_a);
+
+                            // Crisp ring outlines
+                            for (float edge_r : { r_in, r_mid1, r_mid2, r_out }) {
+                                Vector3 e1 = { pos.x + d1.x * edge_r, pos.y + d1.y * edge_r, pos.z + d1.z * edge_r };
+                                Vector3 e2 = { pos.x + d2.x * edge_r, pos.y + d2.y * edge_r, pos.z + d2.z * edge_r };
+                                DrawLine3D(e1, e2, (Color){ 245, 230, 180, 180 });
+                            }
+                        }
                     }
                 }
-                Color c = (i < solar_colors.size()) ? solar_colors[i] : WHITE;
-                float r = (i < solar_radii.size()) ? solar_radii[i] : 0.02f;
-
-                if (i == 0) {
-                    // Sun: glowing star, cleanly bounded within 0.096 AU
-                    DrawSphere(pos, r, c);
-                    DrawSphereWires(pos, r * 1.20f, 10, 10, (Color){ 255, 180, 30, 140 });
+            } else {
+                // Dense systems (galaxy disk, star clusters): fast cubes
+                if (i == 0 && m > 50.0f) {
+                    float sz = base_sz * 2.0f;
+                    DrawSphere(pos, sz, (Color){ 255, 240, 160, 255 });
+                    DrawSphereWires(pos, sz * 1.2f, 8, 8, (Color){ 255, 200, 50, 180 });
                 } else {
-                    DrawSphere(pos, r, c);
-                    if (i == 7) {
-                        // Saturn ring
-                        DrawCircle3D(pos, r * 2.1f, (Vector3){ 0, 1, 0 }, 90.0f, ColorAlpha(c, 0.5f));
-                        DrawCircle3D(pos, r * 2.5f, (Vector3){ 0, 1, 0 }, 90.0f, ColorAlpha(c, 0.35f));
-                    }
-                }
-            }
-        } else {
-            float max_speed = 5.0f;
-            for (size_t i = 0; i < g_sys.count; i += 16) {
-                float s = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
-                if (s > max_speed) max_speed = s;
-            }
-
-            for (size_t i = 0; i < g_sys.count; i++) {
-                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
-                if (i == 0 && g_sys.m[0] > 50.0f) {
-                    DrawSphere(pos, 2.0f, (Color){ 255, 240, 160, 255 });
-                    DrawSphereWires(pos, 2.2f, 8, 8, (Color){ 255, 200, 50, 180 });
-                } else {
-                    float spd = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
-                    Color c = get_velocity_color(spd, max_speed);
-                    float m = g_sys.m[i];
-                    float sz = (m > 0.5f) ? (0.5f + cbrtf(m) * 0.25f) : 0.45f;
-                    if (sz > 2.5f) sz = 2.5f;
+                    float sz = base_sz * (0.6f + cbrtf(fminf(m, 10.0f)) * 0.2f);
                     DrawCube(pos, sz, sz, sz, c);
                 }
             }
@@ -511,49 +649,53 @@ int main(int argc, char **argv) {
 
         EndMode3D();
 
-        // 2D overlays: planetary markers and labels
-        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-            for (size_t i = 0; i < g_sys.count; i++) {
-                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
-                if (i == 4 && g_sys.count > 4) { // Moon visual offset
-                    float mdx = g_sys.x[4] - g_sys.x[3];
-                    float mdy = g_sys.y[4] - g_sys.y[3];
-                    float mdz = g_sys.z[4] - g_sys.z[3];
-                    float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
-                    if (md > 1e-5f) {
-                        pos.x = g_sys.x[3] + (mdx / md) * 0.045f;
-                        pos.y = g_sys.y[3] + (mdy / md) * 0.045f;
-                        pos.z = g_sys.z[3] + (mdz / md) * 0.045f;
-                    }
+        // 2D overlays: render name labels, target tracking reticles, and hover highlights
+        Vector2 mouse_now = GetMousePosition();
+        Vector3 cam_fwd = { camera.target.x - camera.position.x,
+                            camera.target.y - camera.position.y,
+                            camera.target.z - camera.position.z };
+
+        for (size_t i = 0; i < g_sys.count; i++) {
+            Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+            Vector3 to_p = { pos.x - camera.position.x, pos.y - camera.position.y, pos.z - camera.position.z };
+            if (to_p.x * cam_fwd.x + to_p.y * cam_fwd.y + to_p.z * cam_fwd.z <= 0.0f) continue; // Behind camera!
+
+            Vector2 scr = GetWorldToScreen(pos, camera);
+            if (scr.x > 0 && scr.x < screenWidth && scr.y > 0 && scr.y < screenHeight) {
+                bool is_tracked = (tracked_idx == static_cast<int>(i));
+                float mdist = sqrtf((mouse_now.x - scr.x) * (mouse_now.x - scr.x) + (mouse_now.y - scr.y) * (mouse_now.y - scr.y));
+                bool is_hovered = (mdist < 18.0f);
+
+                const std::string name = (i < g_sys.names.size()) ? g_sys.names[i] : "";
+                float spd = sqrtf(g_sys.vx[i] * g_sys.vx[i] + g_sys.vy[i] * g_sys.vy[i] + g_sys.vz[i] * g_sys.vz[i]);
+                Color body_c = get_celestial_color(name, i, g_sys.units, spd, max_speed);
+
+                // Small crisp beacon point for named / solar bodies so they remain visible at distance
+                if (!name.empty() || g_sys.units == astro::DatasetUnits::SolarSystem) {
+                    DrawCircleV(scr, (i == 0) ? 3.5f : 2.0f, ColorAlpha(body_c, 0.85f));
                 }
-                Vector2 scr = GetWorldToScreen(pos, camera);
-                if (scr.x > 0 && scr.x < screenWidth && scr.y > 0 && scr.y < screenHeight) {
-                    Color c = (i < solar_colors.size()) ? solar_colors[i] : WHITE;
-                    float r = (i < solar_radii.size()) ? solar_radii[i] : 0.02f;
 
-                    // Approximate screen-space radius of the 3D sphere
-                    float dx = camera.position.x - pos.x;
-                    float dy = camera.position.y - pos.y;
-                    float dz = camera.position.z - pos.z;
-                    float dist_to_cam = sqrtf(dx * dx + dy * dy + dz * dz);
-                    float proj_radius = (dist_to_cam > 0.01f)
-                        ? (r / dist_to_cam) * (screenHeight / (2.0f * tanf(camera.fovy * DEG2RAD * 0.5f)))
-                        : 5.0f;
+                if (is_tracked) {
+                    DrawCircleLines((int)scr.x, (int)scr.y, 9, (Color){ 100, 220, 255, 230 });
+                    DrawCircleLines((int)scr.x, (int)scr.y, 10, (Color){ 100, 220, 255, 130 });
+                } else if (is_hovered) {
+                    DrawCircleLines((int)scr.x, (int)scr.y, 8, YELLOW);
+                }
 
-                    // If sphere is tiny on screen (< 3.5px), draw a crisp 2D point/halo so it never vanishes
-                    if (proj_radius < 3.5f) {
-                        DrawCircleV(scr, (i == 0) ? 4.5f : 2.5f, c);
-                        if (i == 0) DrawCircleV(scr, 7.5f, ColorAlpha(c, 0.35f));
+                // If body has a name, draw it with its authentic celestial color
+                if (!name.empty()) {
+                    if (is_tracked) {
+                        DrawText(TextFormat("%s [TRACKED]", name.c_str()), (int)scr.x + 12, (int)scr.y - 6, 12, (Color){ 100, 230, 255, 255 });
+                    } else if (is_hovered) {
+                        DrawText(TextFormat("%s (Click/F to Focus)", name.c_str()), (int)scr.x + 10, (int)scr.y - 6, 12, YELLOW);
+                    } else {
+                        DrawText(name.c_str(), (int)scr.x + 8, (int)scr.y - 6, 12, ColorAlpha(body_c, 0.95f));
                     }
-
-                    const char* name = (i < g_sys.names.size() && !g_sys.names[i].empty())
-                                       ? g_sys.names[i].c_str() : "";
-                    DrawText(name, (int)scr.x + 8, (int)scr.y - 6, 12, (Color){ 210, 225, 255, 210 });
                 }
             }
         }
 
-        int hud_h = (g_sys.units == astro::DatasetUnits::SolarSystem) ? 190 : ((csv_file != NULL) ? 175 : 155);
+        int hud_h = (tracked_idx >= 0) ? 190 : ((csv_file != NULL) ? 175 : 155);
         DrawRectangle(15, 15, 320, hud_h, (Color){ 20, 20, 30, 210 });
         DrawRectangleLines(15, 15, 320, hud_h, (Color){ 60, 70, 90, 255 });
 
@@ -579,30 +721,22 @@ int main(int argc, char **argv) {
             DrawText(TextFormat("State: %s (%.2fx speed)", live_paused ? "PAUSED" : "RUNNING", live_speed), 30, 70, 14,
                      live_paused ? YELLOW : GREEN);
             DrawText(TextFormat("Bodies: %d | Nodes: %d | FPS: %d", n_bodies, g_backend.get_node_count(), GetFPS()), 30, 88, 14, LIGHTGRAY);
-            DrawText(TextFormat("G: %.4f (%s)", sim_g,
-                     (g_sys.units == astro::DatasetUnits::SolarSystem) ? "Solar AU/yr" :
-                     ((fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? "Galactic pc/Myr" : "custom")),
-                     30, 106, 14,
-                     (g_sys.units == astro::DatasetUnits::SolarSystem || fabsf(sim_g - G_IRL_ASTRO) < 1e-6f)
-                     ? (Color){100, 220, 120, 255} : LIGHTGRAY);
+            DrawText(TextFormat("G: %.6f (%s)", sim_g, (fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? "IRL Astro" : "custom"), 30, 106, 14,
+                     (fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? (Color){100, 220, 120, 255} : LIGHTGRAY);
             if (csv_file) {
                 DrawText(TextFormat("Data: %s", GetFileName(csv_file)), 30, 124, 14, LIGHTGRAY);
-                if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-                    const char* target_str = (track_target >= 0 && track_target < (int)g_sys.names.size() && !g_sys.names[track_target].empty())
-                                             ? g_sys.names[track_target].c_str() : ((track_target == -1) ? "Free Pan" : "Sun");
-                    DrawText(TextFormat("Target: %s (TAB to cycle)", target_str), 30, 142, 14, (Color){130, 210, 255, 255});
-                    DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 160, 14, LIGHTGRAY);
-                } else {
-                    DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 142, 14, LIGHTGRAY);
-                }
+            }
+            if (tracked_idx >= 0 && tracked_idx < static_cast<int>(g_sys.count)) {
+                const char* tname = (tracked_idx < static_cast<int>(g_sys.names.size()) && !g_sys.names[tracked_idx].empty())
+                                    ? g_sys.names[tracked_idx].c_str() : TextFormat("#%d", tracked_idx);
+                DrawText(TextFormat("Target: %s (dist: %.2f)", tname, cam_distance), 30, 142, 14, (Color){ 100, 220, 255, 255 });
+                DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 160, 14, LIGHTGRAY);
             } else {
-                DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 124, 14, LIGHTGRAY);
+                DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 142, 14, LIGHTGRAY);
             }
-            if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-                DrawText("[1] Inner System | [2] Full System | [TAB] Track Body | [C] Center Sun", 30, screenHeight - 68, 12, (Color){150, 200, 255, 220});
-            }
-            DrawText("[Up/Down] Speed | [Space] Pause | [Left/Right] Step -/+ | [O] Octree", 30, screenHeight - 50, 12, GRAY);
-            DrawText("[Left Click Drag] Orbit | [Right Click Drag] Pan | [Wheel] Zoom", 30, screenHeight - 32, 12, GRAY);
+            DrawText("[Click / F] Focus Particle | [C] Center | [TAB] Cycle | [Wheel] Zoom", 30, screenHeight - 68, 12, (Color){ 140, 200, 255, 230 });
+            DrawText("[WASD / Right Drag] Pan | [Left Drag] Orbit | [Space] Pause", 30, screenHeight - 50, 12, GRAY);
+            DrawText("[Up/Down] Speed | [Left/Right] Step -/+ | [O] Octree", 30, screenHeight - 32, 12, GRAY);
         }
 
         EndDrawing();
