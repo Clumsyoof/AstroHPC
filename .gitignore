@@ -2,6 +2,7 @@ implementation.md
 astro_tui
 nbody_sim
 astro_view
+test_physics
 *.o
 *.a
 *.so

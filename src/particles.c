@@ -119,6 +119,24 @@ void particles_integrate_symplectic(Particles *sys, int n, float dt) {
     }
 }
 
+void particles_integrate_symplectic_reverse_pos(Particles *sys, int n, float dt) {
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < n; i++) {
+        sys->x[i] -= sys->vx[i] * dt;
+        sys->y[i] -= sys->vy[i] * dt;
+        sys->z[i] -= sys->vz[i] * dt;
+    }
+}
+
+void particles_integrate_symplectic_reverse_vel(Particles *sys, int n, float dt) {
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < n; i++) {
+        sys->vx[i] -= sys->ax[i] * dt;
+        sys->vy[i] -= sys->ay[i] * dt;
+        sys->vz[i] -= sys->az[i] * dt;
+    }
+}
+
 void particles_compute_energy(const Particles *sys, int n, float G, float eps_sq, double *kinetic, double *potential) {
     double total_ke = 0.0;
     double total_pe = 0.0;

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libomp-dev \
+            libraylib-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxi-dev
+
+      - name: Compile All Binaries (nbody_sim, astro_tui, astro_view)
+        run: make all
+
+      - name: Run Physics & Engine Test Suite
+        run: make test
+
+      - name: Run Headless Engine Sanity Check
+        run: ./nbody_sim -n 512 -s 20 --compare
+
+      - name: Verify Snapshot Export Pipeline
+        run: ./nbody_sim -n 128 -s 10 --dump /tmp/ci_snapshots --dump-interval 2

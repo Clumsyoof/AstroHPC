@@ -12,6 +12,10 @@ VIEWER_SRC = src/viewer.c src/snapshot.c src/particles.c src/octree.c
 VIEWER_OBJ = src/viewer.o src/snapshot.o src/particles.o src/octree.o
 RAYLIB_FLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
+TEST_SRC = tests/test_physics.c src/particles.c src/octree.c src/snapshot.c
+TEST_OBJ = tests/test_physics.o src/particles.o src/octree.o src/snapshot.o
+TEST_TARGET = test_physics
+
 all: $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET)
 
 $(TARGET): $(OBJ)
@@ -23,12 +27,18 @@ $(VIEWER_TARGET): $(VIEWER_OBJ)
 $(TUI_TARGET):
 	go build -o $(TUI_TARGET) ./cmd/tui
 
+test: $(TEST_TARGET)
+	@./$(TEST_TARGET)
+
+$(TEST_TARGET): $(TEST_OBJ)
+	$(CC) $(TEST_OBJ) -o $@ $(LDFLAGS)
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJ) src/viewer.o $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET)
+	rm -f $(OBJ) src/viewer.o tests/test_physics.o $(TARGET) $(TUI_TARGET) $(VIEWER_TARGET) $(TEST_TARGET)
 
-.PHONY: all clean $(TUI_TARGET)
+.PHONY: all clean test $(TUI_TARGET)
 
 

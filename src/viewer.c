@@ -324,10 +324,11 @@ int main(int argc, char **argv) {
                     particles_integrate_symplectic(&g_sys, n_bodies, sim_dt);
                 }
                 if (IsKeyPressed(KEY_LEFT)) {
-                    // Step backward 1 single frame when paused (symplectic time-reversal)
+                    // Step backward 1 single frame when paused (exact symplectic time-reversal)
+                    particles_integrate_symplectic_reverse_pos(&g_sys, n_bodies, sim_dt);
                     octree_build(&g_pool, &g_sys, n_bodies);
                     octree_compute_forces(&g_pool, &g_sys, n_bodies, sim_theta, sim_g, sim_eps_sq);
-                    particles_integrate_symplectic(&g_sys, n_bodies, -sim_dt);
+                    particles_integrate_symplectic_reverse_vel(&g_sys, n_bodies, sim_dt);
                 }
             }
         }
