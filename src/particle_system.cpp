@@ -18,8 +18,33 @@
 
 namespace astro {
 
+float ParticleSystem::default_g() const {
+    switch (units) {
+        case DatasetUnits::SolarSystem: return G_SOLAR_SYSTEM;
+        case DatasetUnits::Galactic:    return G_IRL_ASTRO;
+        default:                        return DEFAULT_G;
+    }
+}
+
+float ParticleSystem::default_eps_sq() const {
+    switch (units) {
+        case DatasetUnits::SolarSystem: return DEFAULT_EPS_SQ_SOLAR;
+        case DatasetUnits::Galactic:    return DEFAULT_EPSILON_SQ;
+        default:                        return DEFAULT_EPSILON_SQ;
+    }
+}
+
+float ParticleSystem::default_dt() const {
+    switch (units) {
+        case DatasetUnits::SolarSystem: return DEFAULT_DT_SOLAR;
+        case DatasetUnits::Galactic:    return DEFAULT_DT;
+        default:                        return DEFAULT_DT;
+    }
+}
+
 void ParticleSystem::resize(size_t n) {
     count = n;
+    names.resize(n);
     x.resize(n, 0.0f);
     y.resize(n, 0.0f);
     z.resize(n, 0.0f);
@@ -35,6 +60,8 @@ void ParticleSystem::resize(size_t n) {
 
 void ParticleSystem::clear() {
     count = 0;
+    units = DatasetUnits::Dimensionless;
+    names.clear();
     x.clear(); y.clear(); z.clear();
     vx.clear(); vy.clear(); vz.clear();
     ax.clear(); ay.clear(); az.clear();
@@ -43,6 +70,9 @@ void ParticleSystem::clear() {
 
 void ParticleSystem::swap_particles(size_t i, size_t j) {
     if (i == j) return;
+    if (i < names.size() && j < names.size()) {
+        std::swap(names[i], names[j]);
+    }
     std::swap(x[i], x[j]);
     std::swap(y[i], y[j]);
     std::swap(z[i], z[j]);
@@ -118,6 +148,13 @@ void ParticleSystem::sort_by_morton() {
         tmp_m[i] = m[src];
         tmp_morton[i] = morton[src];
     }
+
+    std::vector<std::string> tmp_names(count);
+    for (size_t i = 0; i < count; i++) {
+        size_t src = p[i];
+        if (src < names.size()) tmp_names[i] = names[src];
+    }
+    if (!names.empty()) names = std::move(tmp_names);
 
     x = std::move(tmp_x);
     y = std::move(tmp_y);
@@ -366,9 +403,29 @@ bool ParticleSystem::load_csv(const std::string& filepath) {
     if (!file.is_open()) return false;
 
     clear();
+    units = DatasetUnits::Dimensionless;
+
     std::string line;
     while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#' || line[0] == '\r') continue;
+        if (line.empty() || line[0] == '\r') continue;
+
+        // Parse comments for unit system clues
+        if (line[0] == '#') {
+            std::string lower_line = line;
+            std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
+            if (lower_line.find("solar system") != std::string::npos ||
+                lower_line.find("39.478") != std::string::npos ||
+                lower_line.find("distance in au") != std::string::npos ||
+                lower_line.find("horizons") != std::string::npos) {
+                units = DatasetUnits::SolarSystem;
+            } else if (lower_line.find("gaia") != std::string::npos ||
+                       lower_line.find("pleiades") != std::string::npos ||
+                       lower_line.find("0.0043009") != std::string::npos ||
+                       lower_line.find("pos=pc") != std::string::npos) {
+                units = DatasetUnits::Galactic;
+            }
+            continue;
+        }
 
         std::stringstream ss(line);
         std::string token;
@@ -380,6 +437,7 @@ bool ParticleSystem::load_csv(const std::string& filepath) {
         if (tokens.size() >= 5) {
             try {
                 // name, mass, x, y, z, [vx, vy, vz]
+                std::string body_name = tokens[0];
                 float mass_val = std::stof(tokens[1]);
                 float px = std::stof(tokens[2]);
                 float py = std::stof(tokens[3]);
@@ -388,6 +446,7 @@ bool ParticleSystem::load_csv(const std::string& filepath) {
                 float vel_y = (tokens.size() >= 8) ? std::stof(tokens[6]) : 0.0f;
                 float vel_z = (tokens.size() >= 8) ? std::stof(tokens[7]) : 0.0f;
 
+                names.push_back(body_name);
                 x.push_back(px);
                 y.push_back(py);
                 z.push_back(pz);
@@ -404,6 +463,17 @@ bool ParticleSystem::load_csv(const std::string& filepath) {
                 // Skip header line or malformed rows
                 continue;
             }
+        }
+    }
+
+    // Secondary fallback based on filepath
+    if (units == DatasetUnits::Dimensionless) {
+        std::string lower_path = filepath;
+        std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), ::tolower);
+        if (lower_path.find("solar") != std::string::npos) {
+            units = DatasetUnits::SolarSystem;
+        } else if (lower_path.find("gaia") != std::string::npos || lower_path.find("pleiades") != std::string::npos) {
+            units = DatasetUnits::Galactic;
         }
     }
 

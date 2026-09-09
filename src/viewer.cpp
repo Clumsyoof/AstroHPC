@@ -143,7 +143,9 @@ int main(int argc, char **argv) {
     float sim_g = DEFAULT_G;
     int g_custom = 0;
     float sim_dt = DEFAULT_DT;
+    int dt_custom = 0;
     float sim_eps_sq = DEFAULT_EPSILON_SQ;
+    int eps_custom = 0;
     float sim_theta = DEFAULT_THETA;
 
     for (int i = 1; i < argc; i++) {
@@ -153,10 +155,12 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--real") == 0 || strcmp(argv[i], "--irl") == 0) {
             sim_g = G_IRL_ASTRO;
             g_custom = 1;
-        } else if (strcmp(argv[i], "-dt") == 0 && i + 1 < argc) {
+        } else if ((strcmp(argv[i], "-dt") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
             sim_dt = (float)atof(argv[++i]);
+            dt_custom = 1;
         } else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
             sim_eps_sq = (float)atof(argv[++i]);
+            eps_custom = 1;
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             sim_theta = (float)atof(argv[++i]);
         } else if (argv[i][0] != '-') {
@@ -185,12 +189,21 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (csv_file && !g_custom) {
-        sim_g = G_IRL_ASTRO;
+    if (csv_file) {
+        if (!g_custom) sim_g = g_sys.default_g();
+        if (!eps_custom) sim_eps_sq = g_sys.default_eps_sq();
+        if (!dt_custom) sim_dt = g_sys.default_dt();
+        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+            cam_distance = 65.0f;
+            live_speed = 3.0f;
+        } else {
+            cam_distance = 45.0f;
+        }
     }
 
-    if (csv_file) {
-        cam_distance = 45.0f;
+    std::vector<std::vector<Vector3>> trails;
+    if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+        trails.resize(g_sys.count);
     }
 
     if (!snapshot_mode) {
@@ -242,6 +255,7 @@ int main(int argc, char **argv) {
         }
 
         if (IsKeyPressed(KEY_R)) {
+            for (auto& tr : trails) tr.clear();
             if (snapshot_mode) {
                 sm.current_index = 0;
                 astro::read_snapshot(sm.files[0], g_sys, &sm.current_header);
@@ -302,11 +316,23 @@ int main(int argc, char **argv) {
             }
 
             if (!live_paused) {
-                int substeps = (live_speed >= 2.0f) ? (int)live_speed : 1;
-                float dt_step = sim_dt * (live_speed / (float)substeps);
+                int substeps = (g_sys.units == astro::DatasetUnits::SolarSystem)
+                               ? static_cast<int>(live_speed * 4.0f)
+                               : ((live_speed >= 2.0f) ? static_cast<int>(live_speed) : 1);
+                if (substeps < 1) substeps = 1;
+                float dt_step = sim_dt * (live_speed / static_cast<float>(substeps));
                 for (int s = 0; s < substeps; s++) {
                     g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
                     g_sys.integrate_symplectic(dt_step);
+                }
+                if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+                    if (trails.size() != g_sys.count) trails.resize(g_sys.count);
+                    for (size_t i = 1; i < g_sys.count; i++) {
+                        trails[i].push_back((Vector3){ g_sys.x[i], g_sys.y[i], g_sys.z[i] });
+                        if (trails[i].size() > 400) {
+                            trails[i].erase(trails[i].begin());
+                        }
+                    }
                 }
             } else {
                 if (IsKeyPressed(KEY_RIGHT)) {
@@ -326,24 +352,85 @@ int main(int argc, char **argv) {
 
         BeginMode3D(camera);
 
-        float max_speed = 5.0f;
-        for (size_t i = 0; i < g_sys.count; i += 16) {
-            float s = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
-            if (s > max_speed) max_speed = s;
-        }
+        static const std::vector<Color> solar_colors = {
+            (Color){ 255, 230, 70, 255 },  // 0: Sun
+            (Color){ 190, 190, 195, 255 },  // 1: Mercury
+            (Color){ 235, 215, 170, 255 },  // 2: Venus
+            (Color){ 90, 160, 245, 255 },   // 3: Earth
+            (Color){ 180, 180, 190, 255 },  // 4: Moon
+            (Color){ 235, 95, 65, 255 },    // 5: Mars
+            (Color){ 225, 175, 120, 255 },  // 6: Jupiter
+            (Color){ 235, 215, 150, 255 },  // 7: Saturn
+            (Color){ 140, 220, 235, 255 },  // 8: Uranus
+            (Color){ 70, 110, 245, 255 },   // 9: Neptune
+            (Color){ 175, 155, 145, 255 },  // 10: Pluto
+        };
 
-        for (size_t i = 0; i < g_sys.count; i++) {
-            Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
-            if (i == 0 && g_sys.m[0] > 100.0f) {
-                DrawSphere(pos, 2.0f, (Color){ 255, 240, 160, 255 });
-                DrawSphereWires(pos, 2.2f, 8, 8, (Color){ 255, 200, 50, 180 });
-            } else {
-                float spd = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
-                Color c = get_velocity_color(spd, max_speed);
-                float m = g_sys.m[i];
-                float sz = (m > 0.5f) ? (0.5f + cbrtf(m) * 0.25f) : 0.45f;
-                if (sz > 2.5f) sz = 2.5f;
-                DrawCube(pos, sz, sz, sz, c);
+        static const std::vector<float> solar_radii = {
+            1.4f,   // Sun
+            0.32f,  // Mercury
+            0.42f,  // Venus
+            0.45f,  // Earth
+            0.20f,  // Moon
+            0.38f,  // Mars
+            1.05f,  // Jupiter
+            0.88f,  // Saturn
+            0.68f,  // Uranus
+            0.68f,  // Neptune
+            0.26f   // Pluto
+        };
+
+        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+            // Draw Keplerian orbit trails
+            for (size_t i = 1; i < trails.size(); i++) {
+                const auto& tr = trails[i];
+                if (tr.size() < 2) continue;
+                Color col = (i < solar_colors.size()) ? solar_colors[i] : SKYBLUE;
+                for (size_t p = 1; p < tr.size(); p++) {
+                    float alpha = (float)p / (float)tr.size();
+                    DrawLine3D(tr[p - 1], tr[p], ColorAlpha(col, alpha * 0.55f));
+                }
+            }
+
+            // Draw solar system bodies
+            for (size_t i = 0; i < g_sys.count; i++) {
+                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                Color c = (i < solar_colors.size()) ? solar_colors[i] : WHITE;
+                float r = (i < solar_radii.size()) ? solar_radii[i] : 0.4f;
+
+                if (i == 0) {
+                    // Sun: glowing star
+                    DrawSphere(pos, r, c);
+                    DrawSphereWires(pos, r * 1.25f, 10, 10, (Color){ 255, 180, 30, 140 });
+                } else {
+                    DrawSphere(pos, r, c);
+                    if (i == 7) {
+                        // Saturn ring
+                        DrawCircle3D(pos, r * 2.1f, (Vector3){ 0, 1, 0 }, 90.0f, ColorAlpha(c, 0.5f));
+                        DrawCircle3D(pos, r * 2.5f, (Vector3){ 0, 1, 0 }, 90.0f, ColorAlpha(c, 0.35f));
+                    }
+                }
+            }
+        } else {
+            float max_speed = 5.0f;
+            for (size_t i = 0; i < g_sys.count; i += 16) {
+                float s = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
+                if (s > max_speed) max_speed = s;
+            }
+
+            for (size_t i = 0; i < g_sys.count; i++) {
+                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                if (i == 0 && g_sys.m[0] > 50.0f) {
+                    DrawSphere(pos, 2.0f, (Color){ 255, 240, 160, 255 });
+                    DrawSphereWires(pos, 2.2f, 8, 8, (Color){ 255, 200, 50, 180 });
+                } else {
+                    float spd = sqrtf(g_sys.vx[i]*g_sys.vx[i] + g_sys.vy[i]*g_sys.vy[i] + g_sys.vz[i]*g_sys.vz[i]);
+                    Color c = get_velocity_color(spd, max_speed);
+                    float m = g_sys.m[i];
+                    float sz = (m > 0.5f) ? (0.5f + cbrtf(m) * 0.25f) : 0.45f;
+                    if (sz > 2.5f) sz = 2.5f;
+                    DrawCube(pos, sz, sz, sz, c);
+                }
             }
         }
 
@@ -352,6 +439,19 @@ int main(int argc, char **argv) {
         }
 
         EndMode3D();
+
+        // 2D overlays: planetary labels
+        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+            for (size_t i = 0; i < g_sys.count; i++) {
+                Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                Vector2 scr = GetWorldToScreen(pos, camera);
+                if (scr.x > 0 && scr.x < screenWidth && scr.y > 0 && scr.y < screenHeight) {
+                    const char* name = (i < g_sys.names.size() && !g_sys.names[i].empty())
+                                       ? g_sys.names[i].c_str() : "";
+                    DrawText(name, (int)scr.x + 8, (int)scr.y - 6, 12, (Color){ 210, 225, 255, 210 });
+                }
+            }
+        }
 
         int hud_h = (csv_file != NULL) ? 175 : 155;
         DrawRectangle(15, 15, 320, hud_h, (Color){ 20, 20, 30, 210 });
@@ -379,8 +479,12 @@ int main(int argc, char **argv) {
             DrawText(TextFormat("State: %s (%.2fx speed)", live_paused ? "PAUSED" : "RUNNING", live_speed), 30, 70, 14,
                      live_paused ? YELLOW : GREEN);
             DrawText(TextFormat("Bodies: %d | Nodes: %d | FPS: %d", n_bodies, g_backend.get_node_count(), GetFPS()), 30, 88, 14, LIGHTGRAY);
-            DrawText(TextFormat("G: %.6f (%s)", sim_g, (fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? "IRL Astro" : "custom"), 30, 106, 14,
-                     (fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? (Color){100, 220, 120, 255} : LIGHTGRAY);
+            DrawText(TextFormat("G: %.4f (%s)", sim_g,
+                     (g_sys.units == astro::DatasetUnits::SolarSystem) ? "Solar AU/yr" :
+                     ((fabsf(sim_g - G_IRL_ASTRO) < 1e-6f) ? "Galactic pc/Myr" : "custom")),
+                     30, 106, 14,
+                     (g_sys.units == astro::DatasetUnits::SolarSystem || fabsf(sim_g - G_IRL_ASTRO) < 1e-6f)
+                     ? (Color){100, 220, 120, 255} : LIGHTGRAY);
             if (csv_file) {
                 DrawText(TextFormat("Data: %s", GetFileName(csv_file)), 30, 124, 14, LIGHTGRAY);
                 DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 142, 14, LIGHTGRAY);

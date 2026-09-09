@@ -9,9 +9,17 @@
 
 namespace astro {
 
+enum class DatasetUnits {
+    Dimensionless, // G = 1.0 (standard N-body dimensionless units)
+    Galactic,      // G = 0.004300917 pc*(km/s)^2/M_sun (Gaia, star clusters)
+    SolarSystem    // G = 39.4784176 AU*(AU/yr)^2/M_sun (NASA JPL Horizons ephemerides)
+};
+
 class ParticleSystem {
 public:
     size_t count = 0;
+    DatasetUnits units = DatasetUnits::Dimensionless;
+    std::vector<std::string> names;
 
     // Structure of Arrays (SoA) contiguous channels
     std::vector<float> x;
@@ -32,6 +40,11 @@ public:
     void resize(size_t n);
     void clear();
     void swap_particles(size_t i, size_t j);
+
+    // Default physical constants matching current dataset units
+    float default_g() const;
+    float default_eps_sq() const;
+    float default_dt() const;
 
     // Bounding box & Morton space-filling curve sorting
     BoundingBox compute_bounding_box() const;

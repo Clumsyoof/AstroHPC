@@ -17,9 +17,12 @@
 
 // Physical and algorithmic defaults
 #define G_IRL_ASTRO         0.004300917f // Newton's G in pc * (km/s)^2 / M_sun (1 time unit = 0.9778 Myr)
+#define G_SOLAR_SYSTEM      39.4784176f  // Newton's G in AU * (AU/yr)^2 / M_sun (4 * pi^2)
 #define DEFAULT_G           1.0f         // Dimensionless N-body standard
 #define DEFAULT_DT          0.01f
-#define DEFAULT_EPSILON_SQ  0.04f        // Softening parameter (0.2 pc)^2
+#define DEFAULT_DT_SOLAR    0.001f       // 0.001 yr (~8.76 hours) for planetary orbits
+#define DEFAULT_EPSILON_SQ  0.04f        // Softening parameter (0.2 pc)^2 for star clusters
+#define DEFAULT_EPS_SQ_SOLAR 1e-6f       // Softening parameter (0.001 AU)^2 for solar system
 #define DEFAULT_THETA       0.65f        // Barnes-Hut Multipole Acceptance Criterion
 
 #endif // CONFIG_H

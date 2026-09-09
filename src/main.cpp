@@ -59,7 +59,9 @@ int main(int argc, char** argv) {
     bool g_custom = false;
     float theta = DEFAULT_THETA;
     float eps_sq = DEFAULT_EPSILON_SQ;
+    bool eps_custom = false;
     float dt = DEFAULT_DT;
+    bool dt_custom = false;
     bool use_direct = false;
     bool compare_mode = false;
     bool bench_mode = false;
@@ -84,8 +86,10 @@ int main(int argc, char** argv) {
             theta = std::stof(argv[++i]);
         } else if (arg == "-e" && i + 1 < argc) {
             eps_sq = std::stof(argv[++i]);
+            eps_custom = true;
         } else if (arg == "-d" && i + 1 < argc) {
             dt = std::stof(argv[++i]);
+            dt_custom = true;
         } else if (arg == "--preset" && i + 1 < argc) {
             preset = argv[++i];
         } else if ((arg == "-f" || arg == "--file") && i + 1 < argc) {
@@ -124,7 +128,13 @@ int main(int argc, char** argv) {
         }
         n = static_cast<int>(ps.count);
         if (!g_custom) {
-            g_val = G_IRL_ASTRO;
+            g_val = ps.default_g();
+        }
+        if (!eps_custom) {
+            eps_sq = ps.default_eps_sq();
+        }
+        if (!dt_custom) {
+            dt = ps.default_dt();
         }
     } else if (preset == "three_body") {
         ps.init_three_body();
