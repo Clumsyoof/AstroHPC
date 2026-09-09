@@ -1,6 +1,8 @@
 implementation.md
 scripts/
 astro_tui
+nbody_sim
+astro_view
 *.o
 *.a
 *.so
@@ -9,4 +11,5 @@ build/
 bin/
 *.log
 *.dump
-data/*.bin
+*.bin
+snapshots*/

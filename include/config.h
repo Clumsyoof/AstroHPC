@@ -16,9 +16,10 @@
 #define MAX_OCTREE_DEPTH    32
 
 // Physical and algorithmic defaults
-#define DEFAULT_G           1.0f
+#define G_IRL_ASTRO         0.004300917f // Newton's G in pc * (km/s)^2 / M_sun (1 time unit = 0.9778 Myr)
+#define DEFAULT_G           1.0f         // Dimensionless N-body standard
 #define DEFAULT_DT          0.01f
-#define DEFAULT_EPSILON_SQ  4.0f    // Gravitational softening parameter
-#define DEFAULT_THETA       0.65f   // Barnes-Hut Multipole Acceptance Criterion
+#define DEFAULT_EPSILON_SQ  0.04f        // Softening parameter (0.2 pc)^2
+#define DEFAULT_THETA       0.65f        // Barnes-Hut Multipole Acceptance Criterion
 
 #endif // CONFIG_H

@@ -1,4 +1,5 @@
 #include "particles.h"
+#include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +52,22 @@ void particles_init_disk(Particles *sys, int n, float radius, float central_mass
 
     if (n == 1) return;
 
-    const float disk_particle_mass = total_disk_mass / (float)(n - 1);
+    // Generate heterogeneous stellar masses following Salpeter Initial Mass Function (IMF): dN/dm ~ m^(-2.35)
+    const float gamma = 1.0f - 2.35f; // -1.35
+    const float m_min_g = powf(0.15f, gamma);
+    const float m_max_g = powf(8.0f, gamma);
+
+    float raw_mass_sum = 0.0f;
+    for (int i = 1; i < n; i++) {
+        float u_m = (float)rand() / (float)RAND_MAX;
+        sys->m[i] = powf(m_min_g + u_m * (m_max_g - m_min_g), 1.0f / gamma);
+        raw_mass_sum += sys->m[i];
+    }
+    const float mass_scale = total_disk_mass / (raw_mass_sum > 1e-4f ? raw_mass_sum : 1.0f);
+    for (int i = 1; i < n; i++) {
+        sys->m[i] *= mass_scale;
+    }
+
     const float min_r = radius * 0.05f;
 
     for (int i = 1; i < n; i++) {
@@ -70,7 +86,6 @@ void particles_init_disk(Particles *sys, int n, float radius, float central_mass
         sys->x[i] = r * cos_t;
         sys->y[i] = r * sin_t;
         sys->z[i] = z_offset;
-        sys->m[i] = disk_particle_mass;
 
         // Circular orbital velocity v = sqrt(G * M_enclosed / r)
         // Approximate enclosed mass = central_mass + fraction of disk mass
@@ -134,4 +149,44 @@ void particles_compute_energy(const Particles *sys, int n, float G, float eps_sq
 
     *kinetic = total_ke;
     *potential = total_pe;
+}
+
+int particles_load_csv(Particles *sys, const char *filepath, int max_bodies) {
+    if (!sys || !filepath || max_bodies <= 0) return -1;
+
+    FILE *f = fopen(filepath, "r");
+    if (!f) return -1;
+
+    particles_reset_accelerations(sys, max_bodies);
+
+    char line[512];
+    int count = 0;
+
+    while (fgets(line, sizeof(line), f) && count < max_bodies) {
+        // Skip comment lines (#) and empty lines
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+
+        char name[128];
+        float mass = 1.0f;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        float vx = 0.0f, vy = 0.0f, vz = 0.0f;
+
+        // Parse: name, mass, x, y, z, vx, vy, vz
+        int matched = sscanf(line, "%127[^,],%f,%f,%f,%f,%f,%f,%f",
+                             name, &mass, &x, &y, &z, &vx, &vy, &vz);
+
+        if (matched >= 5) {
+            sys->m[count] = mass;
+            sys->x[count] = x;
+            sys->y[count] = y;
+            sys->z[count] = z;
+            sys->vx[count] = (matched >= 8) ? vx : 0.0f;
+            sys->vy[count] = (matched >= 8) ? vy : 0.0f;
+            sys->vz[count] = (matched >= 8) ? vz : 0.0f;
+            count++;
+        }
+    }
+
+    fclose(f);
+    return count;
 }

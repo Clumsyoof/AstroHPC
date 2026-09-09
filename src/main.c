@@ -3,10 +3,12 @@
 #include <string.h>
 #include <math.h>
 #include <omp.h>
+#include <sys/stat.h>
 
 #include "config.h"
 #include "particles.h"
 #include "octree.h"
+#include "snapshot.h"
 
 // Statically allocated system and octree arena (Zero per-frame heap allocation)
 static Particles sys;
@@ -27,12 +29,17 @@ static void print_usage(const char *prog) {
     printf("Options:\n");
     printf("  -n <int>        Number of bodies [1..%d] (default: 8192)\n", MAX_BODIES);
     printf("  -s <int>        Number of steps (default: 100)\n");
+    printf("  -g, --grav <float> Gravitational constant G (default: %.2f, IRL: %.7f)\n", DEFAULT_G, G_IRL_ASTRO);
+    printf("  --real, --irl   Use accurate real-world constants (G=%.7f)\n", G_IRL_ASTRO);
     printf("  -t <float>      MAC theta parameter (default: %.2f)\n", DEFAULT_THETA);
     printf("  -e <float>      Softening parameter epsilon^2 (default: %.2f)\n", DEFAULT_EPSILON_SQ);
     printf("  -d <float>      Time step dt (default: %.3f)\n", DEFAULT_DT);
     printf("  --preset <type> Preset: 'disk' or 'three_body' (default: disk)\n");
+    printf("  -f, --file <path> Load particles from CSV dataset (e.g. Gaia DR3)\n");
     printf("  --direct        Use direct O(N^2) computation\n");
     printf("  --compare       Compare Barnes-Hut vs Direct force on step 0\n");
+    printf("  --dump <dir>    Directory to dump binary snapshots\n");
+    printf("  --dump-interval <int> Snapshot step interval (default: 1)\n");
     printf("  -b, --bench     Print per-phase benchmark timings\n");
     printf("  -h, --help      Display this help\n\n");
 }
@@ -40,6 +47,8 @@ static void print_usage(const char *prog) {
 int main(int argc, char **argv) {
     int n = 8192;
     int steps = 100;
+    float g_val = DEFAULT_G;
+    int g_custom = 0;
     float theta = DEFAULT_THETA;
     float eps_sq = DEFAULT_EPSILON_SQ;
     float dt = DEFAULT_DT;
@@ -47,6 +56,9 @@ int main(int argc, char **argv) {
     int compare_mode = 0;
     int bench_mode = 0;
     const char *preset = "disk";
+    const char *csv_file = NULL;
+    const char *dump_dir = NULL;
+    int dump_interval = 1;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -54,6 +66,12 @@ int main(int argc, char **argv) {
             n = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             steps = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--g") == 0 || strcmp(argv[i], "--grav") == 0) && i + 1 < argc) {
+            g_val = (float)atof(argv[++i]);
+            g_custom = 1;
+        } else if (strcmp(argv[i], "--real") == 0 || strcmp(argv[i], "--irl") == 0) {
+            g_val = G_IRL_ASTRO;
+            g_custom = 1;
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             theta = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
@@ -62,10 +80,16 @@ int main(int argc, char **argv) {
             dt = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--preset") == 0 && i + 1 < argc) {
             preset = argv[++i];
+        } else if ((strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--file") == 0) && i + 1 < argc) {
+            csv_file = argv[++i];
         } else if (strcmp(argv[i], "--direct") == 0) {
             use_direct = 1;
         } else if (strcmp(argv[i], "--compare") == 0) {
             compare_mode = 1;
+        } else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+            dump_dir = argv[++i];
+        } else if (strcmp(argv[i], "--dump-interval") == 0 && i + 1 < argc) {
+            dump_interval = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--bench") == 0) {
             bench_mode = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -78,7 +102,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (strcmp(preset, "three_body") == 0) {
+    if (csv_file) {
+        int loaded = particles_load_csv(&sys, csv_file, MAX_BODIES);
+        if (loaded <= 0) {
+            fprintf(stderr, "Error: Failed to load CSV file: %s\n", csv_file);
+            return 1;
+        }
+        n = loaded;
+        // Default to real-world astronomical constant G for real datasets if not explicitly specified
+        if (!g_custom) {
+            g_val = G_IRL_ASTRO;
+        }
+    } else if (strcmp(preset, "three_body") == 0) {
         n = 3;
         eps_sq = 1e-2f;
     }
@@ -89,11 +124,18 @@ int main(int argc, char **argv) {
     }
 
     print_banner();
-    printf("astrohpc: bodies=%d, steps=%d, algo=%s, dt=%.4f, threads=%d\n\n",
-           n, steps, use_direct ? "direct" : "barnes-hut", dt, omp_get_max_threads());
+    if (csv_file) {
+        printf("astrohpc: dataset=%s, bodies=%d, steps=%d, algo=%s, G=%.7f, dt=%.4f, threads=%d\n\n",
+               csv_file, n, steps, use_direct ? "direct" : "barnes-hut", g_val, dt, omp_get_max_threads());
+    } else {
+        printf("astrohpc: bodies=%d, steps=%d, algo=%s, G=%.4f, dt=%.4f, threads=%d\n\n",
+               n, steps, use_direct ? "direct" : "barnes-hut", g_val, dt, omp_get_max_threads());
+    }
 
     // Initialize particles
-    if (strcmp(preset, "three_body") == 0) {
+    if (csv_file) {
+        // Already loaded into sys above
+    } else if (strcmp(preset, "three_body") == 0) {
         particles_init_three_body(&sys);
     } else {
         particles_init_disk(&sys, n, 100.0f, 1000.0f, 200.0f);
@@ -104,7 +146,7 @@ int main(int argc, char **argv) {
         printf("--- Running Baseline Comparison (Step 0) ---\n");
 
         double t0 = omp_get_wtime();
-        direct_compute_forces(&sys, n, DEFAULT_G, eps_sq);
+        direct_compute_forces(&sys, n, g_val, eps_sq);
         double t_direct = omp_get_wtime() - t0;
 
         float *direct_ax = malloc(n * sizeof(float));
@@ -119,7 +161,7 @@ int main(int argc, char **argv) {
         double t_tree_build = omp_get_wtime() - t1;
 
         double t2 = omp_get_wtime();
-        octree_compute_forces(&pool, &sys, n, theta, DEFAULT_G, eps_sq);
+        octree_compute_forces(&pool, &sys, n, theta, g_val, eps_sq);
         double t_bh_force = omp_get_wtime() - t2;
 
         double max_rel_err = 0.0;
@@ -153,7 +195,7 @@ int main(int argc, char **argv) {
     // Initial Energy Diagnostics
     if (n <= 4096) {
         double ke0, pe0;
-        particles_compute_energy(&sys, n, DEFAULT_G, eps_sq, &ke0, &pe0);
+        particles_compute_energy(&sys, n, g_val, eps_sq, &ke0, &pe0);
         printf("Initial Energy -> KE: %11.4e | PE: %11.4e | Total: %11.4e\n\n", ke0, pe0, ke0 + pe0);
     }
 
@@ -162,6 +204,13 @@ int main(int argc, char **argv) {
     double total_force_time = 0.0;
     double total_integ_time = 0.0;
 
+    if (dump_dir) {
+        struct stat st = {0};
+        if (stat(dump_dir, &st) == -1) {
+            mkdir(dump_dir, 0755);
+        }
+    }
+
     printf("Simulating %d steps...\n", steps);
 
     for (int step = 0; step < steps; step++) {
@@ -169,7 +218,7 @@ int main(int argc, char **argv) {
 
         if (use_direct) {
             double t0 = omp_get_wtime();
-            direct_compute_forces(&sys, n, DEFAULT_G, eps_sq);
+            direct_compute_forces(&sys, n, g_val, eps_sq);
             total_force_time += (omp_get_wtime() - t0);
         } else {
             // Pipeline Stage 1: Arena Reset & Stage 2: Octree Build
@@ -179,7 +228,7 @@ int main(int argc, char **argv) {
 
             // Pipeline Stage 3: Force Compute (Multipole Traversal)
             double t1 = omp_get_wtime();
-            octree_compute_forces(&pool, &sys, n, theta, DEFAULT_G, eps_sq);
+            octree_compute_forces(&pool, &sys, n, theta, g_val, eps_sq);
             total_force_time += (omp_get_wtime() - t1);
         }
 
@@ -187,6 +236,13 @@ int main(int argc, char **argv) {
         double t2 = omp_get_wtime();
         particles_integrate_symplectic(&sys, n, dt);
         total_integ_time += (omp_get_wtime() - t2);
+
+        // Save snapshot to disk if requested
+        if (dump_dir && (step % dump_interval == 0)) {
+            char path[512];
+            snprintf(path, sizeof(path), "%s/step_%05d.bin", dump_dir, step);
+            snapshot_write(path, sys.x, sys.y, sys.z, sys.vx, sys.vy, sys.vz, sys.m, n, step, (float)step * dt, dt);
+        }
 
         double step_dt = omp_get_wtime() - step_start;
         total_sim_time += step_dt;
@@ -225,7 +281,7 @@ int main(int argc, char **argv) {
 
     if (n <= 4096) {
         double ke1, pe1;
-        particles_compute_energy(&sys, n, DEFAULT_G, eps_sq, &ke1, &pe1);
+        particles_compute_energy(&sys, n, g_val, eps_sq, &ke1, &pe1);
         printf("\nEnergy: KE=%.4e | PE=%.4e | Total=%.4e\n", ke1, pe1, ke1 + pe1);
     }
 

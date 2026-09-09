@@ -17,9 +17,10 @@ typedef struct {
     ALIGN64 float m[MAX_BODIES];
 } Particles;
 
-// Presets
+// Presets and Loaders
 void particles_init_three_body(Particles *sys);
 void particles_init_disk(Particles *sys, int n, float radius, float central_mass, float total_disk_mass);
+int particles_load_csv(Particles *sys, const char *filepath, int max_bodies);
 
 // Clear accelerations before force computation
 void particles_reset_accelerations(Particles *sys, int n);

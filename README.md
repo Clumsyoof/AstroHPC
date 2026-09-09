@@ -56,6 +56,7 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
   + Python 3.8+ -> Only needed if you run the scripts to fetch fresh
   NASA JPL Horizons ephemerides or generate synthetic star clusters
   (scripts/generate_datasets.py)
+  + Raylib
 
   #### 3. Terminal Requirements
 
@@ -66,15 +67,15 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   #### Gentoo Linux
   ```sh
-  emerge --ask sys-devel/gcc sys-devel/make dev-lang/go
+  emerge --ask sys-devel/gcc sys-devel/make dev-lang/go media-libs/raylib
   ```
   #### Ubuntu / Debian
   ```sh
-  sudo apt update && sudo apt install build-essential gcc make golang libomp-dev
+  sudo apt update && sudo apt install build-essential gcc make golang libomp-dev libraylib-dev
   ```
   #### Fedora / RHEL
   ```sh
-  sudo dnf install gcc make golang libgomp
+  sudo dnf install gcc make golang libgomp raylib-devel
   ```
 
   ### Build
@@ -97,6 +98,13 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 ```sh
 ./nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
 ./nbody_sim -n 4096 --compare   # Compare Barnes-Hut vs Direct O(N^2)
+```
+
+### 3D Visualizer
+```sh
+./astro_view                    # Live simulation
+./astro_view <dataset.csv>      # Real star cluster (e.g. data/gaia_dr3_pleiades.csv)
+./astro_view <snapshot_dir>     # Replay snapshots
 ```
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
