@@ -13,3 +13,8 @@ bin/
 *.dump
 *.bin
 snapshots*/
+Makefile
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
