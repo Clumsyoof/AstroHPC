@@ -1,0 +1,223 @@
+#include <iostream>
+#include <iomanip>
+#include <chrono>
+#include <string>
+#include <vector>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <sys/stat.h>
+
+#include "config.h"
+#include "particles.hpp"
+#include "backend.hpp"
+#include "snapshot.hpp"
+
+using namespace astro;
+
+static void print_banner() {
+    std::cout << "\033[38;5;99m               __             __               \033[0m\n"
+              << "\033[38;5;75m  ____ _____  / /__________  / /_  ____  _____ \033[0m\n"
+              << "\033[38;5;69m / __ `/ ___// __/ ___/ __ \\/ __ \\/ __ \\/ ___/ \033[0m\n"
+              << "\033[38;5;39m/ /_/ (__  )/ /_/ /  / /_/ / / / / /_/ / /__   \033[0m\n"
+              << "\033[38;5;38m\\__,_/____/ \\__/_/   \\____/_/ /_/ .___/\\___/   \033[0m\n"
+              << "\033[38;5;37m                               /_/             \033[0m\n\n";
+}
+
+static void print_usage(const char* prog) {
+    print_banner();
+    std::cout << "Usage: " << prog << " [options]\n"
+              << "Options:\n"
+              << "  -n <int>        Number of bodies (default: 8192)\n"
+              << "  -s <int>        Number of steps (default: 100)\n"
+              << "  -g, --grav <f>  Gravitational constant G (default: " << DEFAULT_G << ", IRL: " << G_IRL_ASTRO << ")\n"
+              << "  --real, --irl   Use accurate real-world constants (G=" << G_IRL_ASTRO << ")\n"
+              << "  -t <float>      MAC theta parameter (default: " << DEFAULT_THETA << ")\n"
+              << "  -e <float>      Softening parameter epsilon^2 (default: " << DEFAULT_EPSILON_SQ << ")\n"
+              << "  -d <float>      Time step dt (default: " << DEFAULT_DT << ")\n"
+              << "  --preset <type> Preset: 'disk' or 'three_body' (default: disk)\n"
+              << "  -f, --file <path> Load particles from CSV dataset (e.g. Gaia DR3)\n"
+              << "  --direct        Use direct O(N^2) computation\n"
+              << "  --compare       Compare Barnes-Hut vs Direct force on step 0\n"
+              << "  --dump <dir>    Directory to dump binary snapshots\n"
+              << "  --dump-interval <int> Snapshot step interval (default: 1)\n"
+              << "  -b, --bench     Print per-phase benchmark timings\n"
+              << "  -h, --help      Display this help\n\n";
+}
+
+int main(int argc, char** argv) {
+    int n = 8192;
+    int steps = 100;
+    float g_val = DEFAULT_G;
+    bool g_custom = false;
+    float theta = DEFAULT_THETA;
+    float eps_sq = DEFAULT_EPSILON_SQ;
+    float dt = DEFAULT_DT;
+    bool use_direct = false;
+    bool compare_mode = false;
+    bool bench_mode = false;
+    std::string preset = "disk";
+    std::string csv_file = "";
+    std::string dump_dir = "";
+    int dump_interval = 1;
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-n" && i + 1 < argc) {
+            n = std::atoi(argv[++i]);
+        } else if (arg == "-s" && i + 1 < argc) {
+            steps = std::atoi(argv[++i]);
+        } else if ((arg == "-g" || arg == "--g" || arg == "--grav") && i + 1 < argc) {
+            g_val = std::stof(argv[++i]);
+            g_custom = true;
+        } else if (arg == "--real" || arg == "--irl") {
+            g_val = G_IRL_ASTRO;
+            g_custom = true;
+        } else if (arg == "-t" && i + 1 < argc) {
+            theta = std::stof(argv[++i]);
+        } else if (arg == "-e" && i + 1 < argc) {
+            eps_sq = std::stof(argv[++i]);
+        } else if (arg == "-d" && i + 1 < argc) {
+            dt = std::stof(argv[++i]);
+        } else if (arg == "--preset" && i + 1 < argc) {
+            preset = argv[++i];
+        } else if ((arg == "-f" || arg == "--file") && i + 1 < argc) {
+            csv_file = argv[++i];
+        } else if (arg == "--direct") {
+            use_direct = true;
+        } else if (arg == "--compare") {
+            compare_mode = true;
+        } else if (arg == "--dump" && i + 1 < argc) {
+            dump_dir = argv[++i];
+        } else if (arg == "--dump-interval" && i + 1 < argc) {
+            dump_interval = std::atoi(argv[++i]);
+        } else if (arg == "-b" || arg == "--bench") {
+            bench_mode = true;
+        } else if (arg == "-h" || arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            std::cerr << "Unknown argument: " << arg << "\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    ParticleSystem ps;
+
+    if (!csv_file.empty()) {
+        if (!ps.load_csv(csv_file)) {
+            std::cerr << "Error: Failed to load CSV file: " << csv_file << "\n";
+            return 1;
+        }
+        n = static_cast<int>(ps.count);
+        if (!g_custom) {
+            g_val = G_IRL_ASTRO;
+        }
+    } else if (preset == "three_body") {
+        ps.init_three_body();
+        n = 3;
+        eps_sq = 1e-2f;
+    } else {
+        ps.init_disk(n, 100.0f, 1000.0f, 200.0f);
+    }
+
+    auto backend = create_compute_backend();
+
+    print_banner();
+    std::cout << "astrohpc (C++ Modern HPC): backend=" << backend->name()
+              << ", bodies=" << n << ", steps=" << steps
+              << ", algo=" << (use_direct ? "direct" : "barnes-hut")
+              << ", G=" << g_val << ", dt=" << dt << "\n\n";
+
+    if (compare_mode) {
+        std::cout << "--- Running Baseline Comparison (Step 0) ---\n";
+        auto t0 = std::chrono::high_resolution_clock::now();
+        backend->direct_compute_forces(ps, g_val, eps_sq);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double t_direct = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        std::vector<float> d_ax = ps.ax;
+        std::vector<float> d_ay = ps.ay;
+        std::vector<float> d_az = ps.az;
+
+        auto t2 = std::chrono::high_resolution_clock::now();
+        backend->compute_forces(ps, theta, g_val, eps_sq);
+        auto t3 = std::chrono::high_resolution_clock::now();
+        double t_bh = std::chrono::duration<double, std::milli>(t3 - t2).count();
+
+        double max_rel_err = 0.0;
+        double sum_rel_err = 0.0;
+        for (int i = 0; i < n; i++) {
+            double d_mag = std::sqrt(d_ax[i]*d_ax[i] + d_ay[i]*d_ay[i] + d_az[i]*d_az[i]);
+            double diff_x = ps.ax[i] - d_ax[i];
+            double diff_y = ps.ay[i] - d_ay[i];
+            double diff_z = ps.az[i] - d_az[i];
+            double diff_mag = std::sqrt(diff_x*diff_x + diff_y*diff_y + diff_z*diff_z);
+
+            double rel_err = (d_mag > 1e-8) ? (diff_mag / d_mag) : diff_mag;
+            if (rel_err > max_rel_err) max_rel_err = rel_err;
+            sum_rel_err += rel_err;
+        }
+
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "  Direct O(N^2) Time:      " << std::setw(8) << t_direct << " ms\n";
+        std::cout << "  Barnes-Hut Time:         " << std::setw(8) << t_bh << " ms\n";
+        std::cout << "  Speedup:                 " << std::setw(8) << (t_direct / std::max(t_bh, 1e-6)) << "x\n";
+        std::cout << std::setprecision(4);
+        std::cout << "  Mean Relative Force Err: " << std::setw(8) << (sum_rel_err / n) * 100.0 << "%\n";
+        std::cout << "  Max  Relative Force Err: " << std::setw(8) << max_rel_err * 100.0 << "%\n";
+        std::cout << "--------------------------------------------\n\n";
+    }
+
+    if (n <= 4096) {
+        double ke0, pe0;
+        ps.compute_energy(g_val, eps_sq, ke0, pe0);
+        std::cout << std::scientific << std::setprecision(4);
+        std::cout << "Initial Energy -> KE: " << ke0 << " | PE: " << pe0 << " | Total: " << (ke0 + pe0) << "\n\n";
+    }
+
+    if (!dump_dir.empty()) {
+        mkdir(dump_dir.c_str(), 0777);
+    }
+
+    auto start_sim = std::chrono::high_resolution_clock::now();
+    float sim_time = 0.0f;
+
+    for (int s = 0; s < steps; s++) {
+        if (!dump_dir.empty() && (s % dump_interval == 0)) {
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s/step_%05d.bin", dump_dir.c_str(), s);
+            write_snapshot(path, ps, s, sim_time, dt);
+        }
+
+        if (use_direct) {
+            backend->direct_compute_forces(ps, g_val, eps_sq);
+        } else {
+            backend->compute_forces(ps, theta, g_val, eps_sq);
+        }
+
+        ps.integrate_symplectic(dt);
+        sim_time += dt;
+
+        if (bench_mode && (s % 10 == 0 || s == steps - 1)) {
+            std::cout << "[Step " << std::setw(4) << s << "/" << steps << "] sim_time=" << sim_time << "\n";
+        }
+    }
+
+    auto end_sim = std::chrono::high_resolution_clock::now();
+    double total_ms = std::chrono::duration<double, std::milli>(end_sim - start_sim).count();
+
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "\nSimulation completed in " << total_ms << " ms ("
+              << (total_ms / steps) << " ms/step)\n";
+
+    if (n <= 4096) {
+        double ke_final, pe_final;
+        ps.compute_energy(g_val, eps_sq, ke_final, pe_final);
+        std::cout << std::scientific << std::setprecision(4);
+        std::cout << "Final   Energy -> KE: " << ke_final << " | PE: " << pe_final << " | Total: " << (ke_final + pe_final) << "\n";
+    }
+
+    return 0;
+}
