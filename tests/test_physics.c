@@ -173,6 +173,15 @@ static int test_octree_integrity_and_mass_conservation(void) {
         }
     }
 
+    // Check pool exhaustion safety return without stack overflow
+    int saved_count = test_pool.node_count;
+    test_pool.node_count = MAX_OCTREE_NODES;
+    if (octree_alloc_node(&test_pool, 0.0f, 0.0f, 0.0f, 1.0f) != -1) {
+        fprintf(stderr, "octree_alloc_node should return -1 when pool exhausted\n");
+        return -1;
+    }
+    test_pool.node_count = saved_count;
+
     return 0;
 }
 

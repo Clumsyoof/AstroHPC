@@ -9,6 +9,13 @@ void octree_pool_reset(OctreePool *pool) {
 
 int octree_alloc_node(OctreePool *pool, float cx, float cy, float cz, float half_size) {
     if (pool->node_count >= MAX_OCTREE_NODES) {
+        static int warned = 0;
+        if (!warned) {
+            fprintf(stderr, "\n[astrohpc] Warning: Octree node pool exhausted (MAX_OCTREE_NODES = %d).\n"
+                            "           Subsequent particles will be dropped from spatial tree!\n",
+                    MAX_OCTREE_NODES);
+            warned = 1;
+        }
         return -1;
     }
     int idx = pool->node_count++;
@@ -43,7 +50,7 @@ static inline void get_child_center(const OctNode *node, int octant, float *cx, 
     *cz = node->cz + ((octant & 4) ? *half_size : -*half_size);
 }
 
-static void insert_particle(OctreePool *pool, const Particles *sys, int node_idx, int body_idx, int depth) {
+static int insert_particle(OctreePool *pool, const Particles *sys, int node_idx, int body_idx, int depth) {
     const float px = sys->x[body_idx];
     const float py = sys->y[body_idx];
     const float pz = sys->z[body_idx];
@@ -64,12 +71,12 @@ static void insert_particle(OctreePool *pool, const Particles *sys, int node_idx
     // Case 1: Empty node -> become a leaf containing this particle
     if (m_old == 0.0f && node->body_idx == -1) {
         node->body_idx = body_idx;
-        return;
+        return 0;
     }
 
     // Maximum depth check to avoid infinite recursion on identical positions
     if (depth >= MAX_OCTREE_DEPTH) {
-        return;
+        return 0;
     }
 
     // Case 2: Node is a leaf with an existing particle -> split into internal node
@@ -87,10 +94,16 @@ static void insert_particle(OctreePool *pool, const Particles *sys, int node_idx
             float child_cx, child_cy, child_cz, child_hs;
             get_child_center(node, oct_ex, &child_cx, &child_cy, &child_cz, &child_hs);
             int child_idx = octree_alloc_node(pool, child_cx, child_cy, child_cz, child_hs);
-            if (child_idx == -1) return;
+            if (child_idx == -1) {
+                // Restore existing particle so we don't lose both
+                node->body_idx = existing_body;
+                return -1;
+            }
             node->children[oct_ex] = child_idx;
         }
-        insert_particle(pool, sys, node->children[oct_ex], existing_body, depth + 1);
+        if (insert_particle(pool, sys, node->children[oct_ex], existing_body, depth + 1) != 0) {
+            return -1;
+        }
 
         // Refresh pointer after recursive insertion
         node = &pool->nodes[node_idx];
@@ -102,10 +115,12 @@ static void insert_particle(OctreePool *pool, const Particles *sys, int node_idx
         float child_cx, child_cy, child_cz, child_hs;
         get_child_center(node, oct_new, &child_cx, &child_cy, &child_cz, &child_hs);
         int child_idx = octree_alloc_node(pool, child_cx, child_cy, child_cz, child_hs);
-        if (child_idx == -1) return;
+        if (child_idx == -1) {
+            return -1;
+        }
         node->children[oct_new] = child_idx;
     }
-    insert_particle(pool, sys, node->children[oct_new], body_idx, depth + 1);
+    return insert_particle(pool, sys, node->children[oct_new], body_idx, depth + 1);
 }
 
 int octree_build(OctreePool *pool, const Particles *sys, int n) {
@@ -140,8 +155,20 @@ int octree_build(OctreePool *pool, const Particles *sys, int n) {
     int root = octree_alloc_node(pool, cx, cy, cz, half_size);
     if (root == -1) return -1;
 
+    int dropped = 0;
     for (int i = 0; i < n; i++) {
-        insert_particle(pool, sys, root, i, 0);
+        if (insert_particle(pool, sys, root, i, 0) != 0) {
+            dropped++;
+        }
+    }
+
+    if (dropped > 0) {
+        static int warned_drop = 0;
+        if (!warned_drop) {
+            fprintf(stderr, "[astrohpc] Warning: %d / %d bodies dropped from octree due to node pool exhaustion!\n",
+                    dropped, n);
+            warned_drop = 1;
+        }
     }
 
     return root;

@@ -1,5 +1,15 @@
-CC = gcc
-CFLAGS = -std=c99 -O3 -Wall -Wextra -fopenmp -march=native -Iinclude
+CC ?= gcc
+
+# HPC Architecture Flag: configurable at build time (e.g. make MARCH=native or make MARCH=x86-64-v3)
+# Default is empty for portable binaries across heterogeneous cluster nodes
+MARCH ?=
+ifneq ($(strip $(MARCH)),)
+    ARCH_FLAGS = -march=$(MARCH)
+else
+    ARCH_FLAGS =
+endif
+
+CFLAGS = -std=c99 -O3 -Wall -Wextra -fopenmp $(ARCH_FLAGS) -Iinclude
 LDFLAGS = -lm -fopenmp
 
 SRC = src/main.c src/particles.c src/octree.c src/snapshot.c
