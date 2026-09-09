@@ -46,8 +46,7 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   #### 1. Core Toolchain & Compilers
 
-  + GCC (version 9.0+) or Clang with OpenMP support
-  + OpenMP Runtime: libgomp (included with GCC)
+  + GCC (version 9.0+) or Clang with C++17 support
   + Go (Version 1.21+)
   + make
 
@@ -94,8 +93,9 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 ```
 *Controls: `[Space]` Pause/Resume &bull; `[R]` Reset &bull; `[Q]` Quit*
 
-### Headless C Benchmark
+### Headless Engine & Verification
 ```sh
+make test                       # Run HPC test suite (Morton keys, orbits, Barnes-Hut)
 ./nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
 ./nbody_sim -n 4096 --compare   # Compare Barnes-Hut vs Direct O(N^2)
 ```
