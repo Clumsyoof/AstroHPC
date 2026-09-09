@@ -1,0 +1,12 @@
+implementation.md
+scripts/
+astro_tui
+*.o
+*.a
+*.so
+*.dylib
+build/
+bin/
+*.log
+*.dump
+data/*.bin
