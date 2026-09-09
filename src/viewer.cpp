@@ -194,7 +194,8 @@ int main(int argc, char **argv) {
         if (!eps_custom) sim_eps_sq = g_sys.default_eps_sq();
         if (!dt_custom) sim_dt = g_sys.default_dt();
         if (g_sys.units == astro::DatasetUnits::SolarSystem) {
-            cam_distance = 65.0f;
+            cam_distance = 6.0f;
+            cam_pitch = 0.55f;
             live_speed = 3.0f;
         } else {
             cam_distance = 45.0f;
@@ -213,7 +214,36 @@ int main(int argc, char **argv) {
         g_backend.compute_forces(g_sys, sim_theta, sim_g, sim_eps_sq);
     }
 
+    int track_target = 0; // Solar system mode: 0 = Sun, 1 = Mercury, etc. -1 = Free Pan
+
     while (!WindowShouldClose()) {
+        // Camera presets and tracking for Solar System
+        if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+            if (IsKeyPressed(KEY_ONE)) {
+                // View Inner Planets (Sun, Mercury, Venus, Earth, Mars)
+                track_target = 0;
+                cam_distance = 3.5f;
+                cam_pitch = 0.55f;
+            }
+            if (IsKeyPressed(KEY_TWO)) {
+                // View Full Solar System (out to Pluto)
+                track_target = 0;
+                cam_distance = 55.0f;
+                cam_pitch = 0.75f;
+            }
+            if (IsKeyPressed(KEY_TAB)) {
+                // Cycle tracking through planets
+                track_target = (track_target + 1) % static_cast<int>(g_sys.count);
+                if (track_target != 0 && cam_distance > 5.0f) {
+                    cam_distance = 1.8f;
+                }
+            }
+            if (IsKeyPressed(KEY_C)) {
+                // Re-center on Sun
+                track_target = 0;
+            }
+        }
+
         // Left Click: Orbit
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             Vector2 delta = GetMouseDelta();
@@ -225,6 +255,7 @@ int main(int argc, char **argv) {
 
         // Right/Middle Click: Pan
         if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+            track_target = -1; // disable tracking on manual pan
             Vector2 delta = GetMouseDelta();
             float sin_yaw = sinf(cam_yaw);
             float cos_yaw = cosf(cam_yaw);
@@ -236,11 +267,27 @@ int main(int argc, char **argv) {
         }
 
         // Mouse Wheel Zoom
+        float min_cam_dist = (g_sys.units == astro::DatasetUnits::SolarSystem) ? 0.05f : 5.0f;
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
             cam_distance -= wheel * (cam_distance * 0.08f);
-            if (cam_distance < 5.0f) cam_distance = 5.0f;
+            if (cam_distance < min_cam_dist) cam_distance = min_cam_dist;
             if (cam_distance > 5000.0f) cam_distance = 5000.0f;
+        }
+
+        if (track_target >= 0 && track_target < static_cast<int>(g_sys.count)) {
+            cam_target = (Vector3){ g_sys.x[track_target], g_sys.y[track_target], g_sys.z[track_target] };
+            if (track_target == 4 && g_sys.count > 4) { // Moon tracking offset
+                float mdx = g_sys.x[4] - g_sys.x[3];
+                float mdy = g_sys.y[4] - g_sys.y[3];
+                float mdz = g_sys.z[4] - g_sys.z[3];
+                float md = sqrtf(mdx*mdx + mdy*mdy + mdz*mdz);
+                if (md > 1e-5f) {
+                    cam_target.x = g_sys.x[3] + (mdx / md) * 0.045f;
+                    cam_target.y = g_sys.y[3] + (mdy / md) * 0.045f;
+                    cam_target.z = g_sys.z[3] + (mdz / md) * 0.045f;
+                }
+            }
         }
 
         camera.target = cam_target;
@@ -328,7 +375,19 @@ int main(int argc, char **argv) {
                 if (g_sys.units == astro::DatasetUnits::SolarSystem) {
                     if (trails.size() != g_sys.count) trails.resize(g_sys.count);
                     for (size_t i = 1; i < g_sys.count; i++) {
-                        trails[i].push_back((Vector3){ g_sys.x[i], g_sys.y[i], g_sys.z[i] });
+                        Vector3 pt = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                        if (i == 4 && g_sys.count > 4) { // Moon visual offset from Earth
+                            float mdx = g_sys.x[4] - g_sys.x[3];
+                            float mdy = g_sys.y[4] - g_sys.y[3];
+                            float mdz = g_sys.z[4] - g_sys.z[3];
+                            float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
+                            if (md > 1e-5f) {
+                                pt.x = g_sys.x[3] + (mdx / md) * 0.045f;
+                                pt.y = g_sys.y[3] + (mdy / md) * 0.045f;
+                                pt.z = g_sys.z[3] + (mdz / md) * 0.045f;
+                            }
+                        }
+                        trails[i].push_back(pt);
                         if (trails[i].size() > 400) {
                             trails[i].erase(trails[i].begin());
                         }
@@ -366,18 +425,19 @@ int main(int argc, char **argv) {
             (Color){ 175, 155, 145, 255 },  // 10: Pluto
         };
 
+        // Realistic proportions in AU: Mercury perihelion is ~0.307 AU, so Sun at 0.080 AU leaves vast empty space
         static const std::vector<float> solar_radii = {
-            1.4f,   // Sun
-            0.32f,  // Mercury
-            0.42f,  // Venus
-            0.45f,  // Earth
-            0.20f,  // Moon
-            0.38f,  // Mars
-            1.05f,  // Jupiter
-            0.88f,  // Saturn
-            0.68f,  // Uranus
-            0.68f,  // Neptune
-            0.26f   // Pluto
+            0.080f,  // 0: Sun
+            0.016f,  // 1: Mercury (distance 0.387 AU)
+            0.024f,  // 2: Venus (distance 0.723 AU)
+            0.026f,  // 3: Earth (distance 1.000 AU)
+            0.010f,  // 4: Moon (orbiting Earth)
+            0.020f,  // 5: Mars (distance 1.524 AU)
+            0.065f,  // 6: Jupiter (distance 5.204 AU)
+            0.055f,  // 7: Saturn (distance 9.582 AU)
+            0.040f,  // 8: Uranus (distance 19.20 AU)
+            0.040f,  // 9: Neptune (distance 30.05 AU)
+            0.015f   // 10: Pluto (distance 39.48 AU)
         };
 
         if (g_sys.units == astro::DatasetUnits::SolarSystem) {
@@ -395,13 +455,24 @@ int main(int argc, char **argv) {
             // Draw solar system bodies
             for (size_t i = 0; i < g_sys.count; i++) {
                 Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                if (i == 4 && g_sys.count > 4) { // Moon visual offset
+                    float mdx = g_sys.x[4] - g_sys.x[3];
+                    float mdy = g_sys.y[4] - g_sys.y[3];
+                    float mdz = g_sys.z[4] - g_sys.z[3];
+                    float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
+                    if (md > 1e-5f) {
+                        pos.x = g_sys.x[3] + (mdx / md) * 0.045f;
+                        pos.y = g_sys.y[3] + (mdy / md) * 0.045f;
+                        pos.z = g_sys.z[3] + (mdz / md) * 0.045f;
+                    }
+                }
                 Color c = (i < solar_colors.size()) ? solar_colors[i] : WHITE;
-                float r = (i < solar_radii.size()) ? solar_radii[i] : 0.4f;
+                float r = (i < solar_radii.size()) ? solar_radii[i] : 0.02f;
 
                 if (i == 0) {
-                    // Sun: glowing star
+                    // Sun: glowing star, cleanly bounded within 0.096 AU
                     DrawSphere(pos, r, c);
-                    DrawSphereWires(pos, r * 1.25f, 10, 10, (Color){ 255, 180, 30, 140 });
+                    DrawSphereWires(pos, r * 1.20f, 10, 10, (Color){ 255, 180, 30, 140 });
                 } else {
                     DrawSphere(pos, r, c);
                     if (i == 7) {
@@ -440,12 +511,41 @@ int main(int argc, char **argv) {
 
         EndMode3D();
 
-        // 2D overlays: planetary labels
+        // 2D overlays: planetary markers and labels
         if (g_sys.units == astro::DatasetUnits::SolarSystem) {
             for (size_t i = 0; i < g_sys.count; i++) {
                 Vector3 pos = { g_sys.x[i], g_sys.y[i], g_sys.z[i] };
+                if (i == 4 && g_sys.count > 4) { // Moon visual offset
+                    float mdx = g_sys.x[4] - g_sys.x[3];
+                    float mdy = g_sys.y[4] - g_sys.y[3];
+                    float mdz = g_sys.z[4] - g_sys.z[3];
+                    float md = sqrtf(mdx * mdx + mdy * mdy + mdz * mdz);
+                    if (md > 1e-5f) {
+                        pos.x = g_sys.x[3] + (mdx / md) * 0.045f;
+                        pos.y = g_sys.y[3] + (mdy / md) * 0.045f;
+                        pos.z = g_sys.z[3] + (mdz / md) * 0.045f;
+                    }
+                }
                 Vector2 scr = GetWorldToScreen(pos, camera);
                 if (scr.x > 0 && scr.x < screenWidth && scr.y > 0 && scr.y < screenHeight) {
+                    Color c = (i < solar_colors.size()) ? solar_colors[i] : WHITE;
+                    float r = (i < solar_radii.size()) ? solar_radii[i] : 0.02f;
+
+                    // Approximate screen-space radius of the 3D sphere
+                    float dx = camera.position.x - pos.x;
+                    float dy = camera.position.y - pos.y;
+                    float dz = camera.position.z - pos.z;
+                    float dist_to_cam = sqrtf(dx * dx + dy * dy + dz * dz);
+                    float proj_radius = (dist_to_cam > 0.01f)
+                        ? (r / dist_to_cam) * (screenHeight / (2.0f * tanf(camera.fovy * DEG2RAD * 0.5f)))
+                        : 5.0f;
+
+                    // If sphere is tiny on screen (< 3.5px), draw a crisp 2D point/halo so it never vanishes
+                    if (proj_radius < 3.5f) {
+                        DrawCircleV(scr, (i == 0) ? 4.5f : 2.5f, c);
+                        if (i == 0) DrawCircleV(scr, 7.5f, ColorAlpha(c, 0.35f));
+                    }
+
                     const char* name = (i < g_sys.names.size() && !g_sys.names[i].empty())
                                        ? g_sys.names[i].c_str() : "";
                     DrawText(name, (int)scr.x + 8, (int)scr.y - 6, 12, (Color){ 210, 225, 255, 210 });
@@ -453,7 +553,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        int hud_h = (csv_file != NULL) ? 175 : 155;
+        int hud_h = (g_sys.units == astro::DatasetUnits::SolarSystem) ? 190 : ((csv_file != NULL) ? 175 : 155);
         DrawRectangle(15, 15, 320, hud_h, (Color){ 20, 20, 30, 210 });
         DrawRectangleLines(15, 15, 320, hud_h, (Color){ 60, 70, 90, 255 });
 
@@ -487,9 +587,19 @@ int main(int argc, char **argv) {
                      ? (Color){100, 220, 120, 255} : LIGHTGRAY);
             if (csv_file) {
                 DrawText(TextFormat("Data: %s", GetFileName(csv_file)), 30, 124, 14, LIGHTGRAY);
-                DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 142, 14, LIGHTGRAY);
+                if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+                    const char* target_str = (track_target >= 0 && track_target < (int)g_sys.names.size() && !g_sys.names[track_target].empty())
+                                             ? g_sys.names[track_target].c_str() : ((track_target == -1) ? "Free Pan" : "Sun");
+                    DrawText(TextFormat("Target: %s (TAB to cycle)", target_str), 30, 142, 14, (Color){130, 210, 255, 255});
+                    DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 160, 14, LIGHTGRAY);
+                } else {
+                    DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 142, 14, LIGHTGRAY);
+                }
             } else {
                 DrawText(TextFormat("Octree (O): %s", show_octree ? "ON" : "OFF"), 30, 124, 14, LIGHTGRAY);
+            }
+            if (g_sys.units == astro::DatasetUnits::SolarSystem) {
+                DrawText("[1] Inner System | [2] Full System | [TAB] Track Body | [C] Center Sun", 30, screenHeight - 68, 12, (Color){150, 200, 255, 220});
             }
             DrawText("[Up/Down] Speed | [Space] Pause | [Left/Right] Step -/+ | [O] Octree", 30, screenHeight - 50, 12, GRAY);
             DrawText("[Left Click Drag] Orbit | [Right Click Drag] Pan | [Wheel] Zoom", 30, screenHeight - 32, 12, GRAY);
