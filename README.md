@@ -46,16 +46,16 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   #### 1. Core Toolchain & Compilers
 
+  + CMake (version 3.20+)
   + GCC (version 9.0+) or Clang with C++17 support
   + Go (Version 1.21+)
-  + make
 
   #### 2. Optional / Utilities
 
   + Python 3.8+ -> Only needed if you run the scripts to fetch fresh
   NASA JPL Horizons ephemerides or generate synthetic star clusters
   (scripts/generate_datasets.py)
-  + Raylib
+  + Raylib 5.0+ (for 3D visualizer)
 
   #### 3. Terminal Requirements
 
@@ -66,45 +66,54 @@ AstroHPC is a astrophysics partical simulator made to be run on HPC clusters
 
   #### Gentoo Linux
   ```sh
-  emerge --ask sys-devel/gcc sys-devel/make dev-lang/go media-libs/raylib
+  emerge --ask dev-build/cmake sys-devel/gcc dev-lang/go media-libs/raylib
   ```
   #### Ubuntu / Debian
   ```sh
-  sudo apt update && sudo apt install build-essential gcc make golang libomp-dev libraylib-dev
+  sudo apt update && sudo apt install build-essential cmake gcc g++ golang libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
   ```
   #### Fedora / RHEL
   ```sh
-  sudo dnf install gcc make golang libgomp raylib-devel
+  sudo dnf install cmake gcc gcc-c++ golang raylib-devel
   ```
 
   ### Build
   ```sh
-  make
+  cmake -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build -j$(nproc)
   ```
 
 <!-- USAGE EXAMPLES -->
 ## Usage
 
+> [!NOTE]
+> The disk preset provides an idealized mock galactic disk (power-law surface density and Salpeter IMF) for visualization and benchmarking, not an exact self-consistent Jeans-theorem equilibrium.
+> The CPU compute backend uses a dynamic Structure-of-Arrays (SoA) layout and 64-bit Morton curve decomposition. A modular CUDA backend interface is available for cluster builds (`-DENABLE_CUDA=ON`).
+
+### Comprehensive HPC Test Suite
+```sh
+ctest --test-dir build --output-on-failure
+```
+
 ### Interactive TUI
 ```sh
-./astro_tui                     # Default (4,096 bodies, galaxy disk)
-./astro_tui -n 8192             # Custom particle count
-./astro_tui -preset three_body  # 3-body orbital preset
+./build/astro_tui                     # Default (4,096 bodies, galaxy disk)
+./build/astro_tui -n 8192             # Custom particle count
+./build/astro_tui -preset three_body  # 3-body orbital preset
 ```
 *Controls: `[Space]` Pause/Resume &bull; `[R]` Reset &bull; `[Q]` Quit*
 
 ### Headless Engine & Verification
 ```sh
-make test                       # Run HPC test suite (Morton keys, orbits, Barnes-Hut)
-./nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
-./nbody_sim -n 4096 --compare   # Compare Barnes-Hut vs Direct O(N^2)
+./build/nbody_sim -n 8192 -s 100 -b   # Benchmark with phase timing breakdown
+./build/nbody_sim -n 4096 --compare   # Compare Barnes-Hut vs Direct O(N^2)
 ```
 
 ### 3D Visualizer
 ```sh
-./astro_view                    # Live simulation
-./astro_view <dataset.csv>      # Real star cluster (e.g. data/gaia_dr3_pleiades.csv)
-./astro_view <snapshot_dir>     # Replay snapshots
+./build/astro_view                    # Live simulation
+./build/astro_view <dataset.csv>      # Real star cluster (e.g. data/gaia_dr3_pleiades.csv)
+./build/astro_view <snapshot_dir>     # Replay snapshots
 ```
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

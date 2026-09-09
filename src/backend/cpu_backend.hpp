@@ -27,6 +27,7 @@ public:
 
 private:
     std::vector<CpuOctNode> nodes;
+    std::vector<int> next_body;
 
     void reset_pool();
     int alloc_node(float cx, float cy, float cz, float half_size);

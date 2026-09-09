@@ -38,12 +38,20 @@ public:
     void compute_morton_keys();
     void sort_by_morton();
 
-    // Physics
+    // Physics & Symplectic Integrators
     void reset_accelerations();
-    void integrate_symplectic(float dt);
+    void integrate_symplectic(float dt); // Semi-implicit Euler (1st order symplectic)
     void integrate_symplectic_reverse_pos(float dt);
     void integrate_symplectic_reverse_vel(float dt);
+
+    // Velocity-Verlet / Leapfrog (2nd order symplectic)
+    void kick(float dt_half);
+    void drift(float dt);
+
+    // Physical Conservation Diagnostics
     void compute_energy(float G, float eps_sq, double& kinetic, double& potential) const;
+    void compute_momentum(double& px, double& py, double& pz) const;
+    void compute_angular_momentum(double& lx, double& ly, double& lz) const;
 
     // Presets & Loaders
     void init_three_body();

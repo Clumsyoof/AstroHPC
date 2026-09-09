@@ -159,6 +159,22 @@ void ParticleSystem::integrate_symplectic_reverse_vel(float dt) {
     }
 }
 
+void ParticleSystem::kick(float dt_half) {
+    for (size_t i = 0; i < count; i++) {
+        vx[i] += ax[i] * dt_half;
+        vy[i] += ay[i] * dt_half;
+        vz[i] += az[i] * dt_half;
+    }
+}
+
+void ParticleSystem::drift(float dt) {
+    for (size_t i = 0; i < count; i++) {
+        x[i] += vx[i] * dt;
+        y[i] += vy[i] * dt;
+        z[i] += vz[i] * dt;
+    }
+}
+
 void ParticleSystem::compute_energy(float G, float eps_sq, double& kinetic, double& potential) const {
     double total_ke = 0.0;
     double total_pe = 0.0;
@@ -187,6 +203,32 @@ void ParticleSystem::compute_energy(float G, float eps_sq, double& kinetic, doub
     potential = total_pe;
 }
 
+void ParticleSystem::compute_momentum(double& px, double& py, double& pz) const {
+    px = py = pz = 0.0;
+    for (size_t i = 0; i < count; i++) {
+        px += (double)m[i] * (double)vx[i];
+        py += (double)m[i] * (double)vy[i];
+        pz += (double)m[i] * (double)vz[i];
+    }
+}
+
+void ParticleSystem::compute_angular_momentum(double& lx, double& ly, double& lz) const {
+    lx = ly = lz = 0.0;
+    for (size_t i = 0; i < count; i++) {
+        double mi = (double)m[i];
+        double xi = (double)x[i];
+        double yi = (double)y[i];
+        double zi = (double)z[i];
+        double vxi = (double)vx[i];
+        double vyi = (double)vy[i];
+        double vzi = (double)vz[i];
+
+        lx += mi * (yi * vzi - zi * vyi);
+        ly += mi * (zi * vxi - xi * vzi);
+        lz += mi * (xi * vyi - yi * vxi);
+    }
+}
+
 void ParticleSystem::init_three_body() {
     resize(3);
     reset_accelerations();
@@ -207,6 +249,10 @@ void ParticleSystem::init_three_body() {
     m[2] = 1.0f;
 }
 
+// Model Qualification: This disk generator models a mock galactic disk with a central point-mass,
+// power-law surface density, Salpeter Initial Mass Function (IMF), and small velocity dispersion.
+// It is designed for visual exploration, code benchmarking, and numerical validation, rather than
+// an exact self-consistent Jeans-theorem equilibrium.
 void ParticleSystem::init_disk(size_t n, float radius, float central_mass, float total_disk_mass) {
     resize(n);
     reset_accelerations();

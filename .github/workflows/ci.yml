@@ -33,22 +33,25 @@ jobs:
             libxrandr-dev \
             libxi-dev
 
-      - name: Install Raylib from Source
+      - name: Install Raylib from Source (Pinned 5.0 Release)
         run: |
-          git clone --depth 1 https://github.com/raysan5/raylib.git
+          git clone --depth 1 --branch 5.0 https://github.com/raysan5/raylib.git
           cd raylib/src
           make PLATFORM=PLATFORM_DESKTOP -j$(nproc)
           sudo make install
           sudo ldconfig
 
-      - name: Compile All Binaries (nbody_sim, astro_tui, astro_view)
-        run: make all
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Run Physics & Engine Test Suite
-        run: make test
+      - name: Compile All Targets (nbody_sim, astro_tui, astro_view, test_hpc)
+        run: cmake --build build -j$(nproc)
+
+      - name: Run HPC Test Suite via CTest
+        run: ctest --test-dir build --output-on-failure
 
       - name: Run Headless Engine Sanity Check
-        run: ./nbody_sim -n 512 -s 20 --compare
+        run: ./build/nbody_sim -n 512 -s 20 --compare
 
       - name: Verify Snapshot Export Pipeline
-        run: ./nbody_sim -n 128 -s 10 --dump /tmp/ci_snapshots --dump-interval 2
+        run: ./build/nbody_sim -n 128 -s 10 --dump /tmp/ci_snapshots --dump-interval 2
