@@ -9,7 +9,7 @@ else
     ARCH_FLAGS =
 endif
 
-CFLAGS = -std=c99 -O3 -Wall -Wextra -fopenmp $(ARCH_FLAGS) -Iinclude
+CFLAGS = -std=c99 -O3 -Wall -Wextra -fopenmp $(ARCH_FLAGS) -Iinclude -I/usr/local/include
 LDFLAGS = -lm -fopenmp
 
 SRC = src/main.c src/particles.c src/octree.c src/snapshot.c
@@ -20,7 +20,7 @@ VIEWER_TARGET = astro_view
 
 VIEWER_SRC = src/viewer.c src/snapshot.c src/particles.c src/octree.c
 VIEWER_OBJ = src/viewer.o src/snapshot.o src/particles.o src/octree.o
-RAYLIB_FLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+RAYLIB_FLAGS = -L/usr/local/lib -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
 TEST_SRC = tests/test_physics.c src/particles.c src/octree.c src/snapshot.c
 TEST_OBJ = tests/test_physics.o src/particles.o src/octree.o src/snapshot.o
