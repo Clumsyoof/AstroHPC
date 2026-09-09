@@ -220,14 +220,14 @@ func (m model) View() string {
 	}
 
 	statsContent := fmt.Sprintf(
-		"State:       %s\n\n"+
-			"Preset:      %s\n"+
-			"Bodies:      %d\n"+
-			"Step:        %d\n"+
-			"Octree Tree: %d nodes\n"+
-			"Time/Step:   %.2f ms\n"+
-			"Engine FPS:  %.1f\n"+
-			"Energy:      %s",
+		"State:     %s\n\n"+
+			"Preset:    %s\n"+
+			"Bodies:    %d\n"+
+			"Step:      %d\n"+
+			"Nodes:     %d\n"+
+			"Time/Step: %.2f ms\n"+
+			"FPS:       %.1f\n"+
+			"Energy:    %s",
 		statusBadge,
 		m.preset,
 		int(m.stats.n),
@@ -242,10 +242,10 @@ func (m model) View() string {
 
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, canvasView, "  ", statsView)
 
-	footer := helpStyle.Render("[Space] Pause/Resume  •  [R] Reset  •  [Q] Quit")
+	footer := helpStyle.Render("[Space] Pause | [R] Reset | [Q] Quit")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("✨ Barnes-Hut N-Body Engine (Go + Bubble Tea)"),
+		titleStyle.Render("astrohpc"),
 		mainView,
 		footer,
 	)

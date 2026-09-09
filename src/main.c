@@ -12,20 +12,29 @@
 static Particles sys;
 static OctreePool pool;
 
+static void print_banner(void) {
+    printf("\033[38;5;99m               __             __               \033[0m\n");
+    printf("\033[38;5;75m  ____ _____  / /__________  / /_  ____  _____ \033[0m\n");
+    printf("\033[38;5;69m / __ `/ ___// __/ ___/ __ \\/ __ \\/ __ \\/ ___/ \033[0m\n");
+    printf("\033[38;5;39m/ /_/ (__  )/ /_/ /  / /_/ / / / / /_/ / /__   \033[0m\n");
+    printf("\033[38;5;38m\\__,_/____/ \\__/_/   \\____/_/ /_/ .___/\\___/   \033[0m\n");
+    printf("\033[38;5;37m                               /_/             \033[0m\n\n");
+}
+
 static void print_usage(const char *prog) {
-    printf("Modular Barnes-Hut N-Body Engine (CLI)\n\n");
+    print_banner();
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
     printf("  -n <int>        Number of bodies [1..%d] (default: 8192)\n", MAX_BODIES);
-    printf("  -s <int>        Number of simulation steps (default: 100)\n");
-    printf("  -t <float>      Barnes-Hut theta MAC parameter (default: %.2f)\n", DEFAULT_THETA);
+    printf("  -s <int>        Number of steps (default: 100)\n");
+    printf("  -t <float>      MAC theta parameter (default: %.2f)\n", DEFAULT_THETA);
     printf("  -e <float>      Softening parameter epsilon^2 (default: %.2f)\n", DEFAULT_EPSILON_SQ);
     printf("  -d <float>      Time step dt (default: %.3f)\n", DEFAULT_DT);
-    printf("  --preset <type> Initialization preset: 'disk' or 'three_body' (default: disk)\n");
-    printf("  --direct        Use direct O(N^2) all-pairs computation instead of Barnes-Hut\n");
-    printf("  --compare       Compare Barnes-Hut vs Direct force accuracy & speed on step 0\n");
-    printf("  -b, --bench     Print high-resolution benchmark statistics per phase\n");
-    printf("  -h, --help      Display this help menu\n\n");
+    printf("  --preset <type> Preset: 'disk' or 'three_body' (default: disk)\n");
+    printf("  --direct        Use direct O(N^2) computation\n");
+    printf("  --compare       Compare Barnes-Hut vs Direct force on step 0\n");
+    printf("  -b, --bench     Print per-phase benchmark timings\n");
+    printf("  -h, --help      Display this help\n\n");
 }
 
 int main(int argc, char **argv) {
@@ -79,18 +88,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("=================================================================\n");
-    printf("         Modular Barnes-Hut N-Body Engine (CLI)                  \n");
-    printf("=================================================================\n");
-    printf("Configuration:\n");
-    printf("  Bodies (N):      %d\n", n);
-    printf("  Steps:           %d\n", steps);
-    printf("  Algorithm:       %s (theta = %.2f)\n", use_direct ? "Direct O(N^2)" : "Barnes-Hut O(N log N)", theta);
-    printf("  Time Step (dt):  %.4f\n", dt);
-    printf("  Softening (eps): %.2f\n", eps_sq);
-    printf("  Preset:          %s\n", preset);
-    printf("  Threads (OMP):   %d\n", omp_get_max_threads());
-    printf("-----------------------------------------------------------------\n\n");
+    print_banner();
+    printf("astrohpc: bodies=%d, steps=%d, algo=%s, dt=%.4f, threads=%d\n\n",
+           n, steps, use_direct ? "direct" : "barnes-hut", dt, omp_get_max_threads());
 
     // Initialize particles
     if (strcmp(preset, "three_body") == 0) {
@@ -203,35 +203,31 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("\n=================================================================\n");
-    printf("                      Simulation Summary                         \n");
-    printf("=================================================================\n");
-    printf("Total Execution Time:    %8.3f seconds\n", total_sim_time);
-    printf("Average Time Per Step:   %8.3f ms (%.1f FPS)\n",
+    printf("\nSummary:\n");
+    printf("  Total time: %.3f s\n", total_sim_time);
+    printf("  Time/step:  %.3f ms (%.1f FPS)\n",
            (total_sim_time / steps) * 1000.0, (double)steps / total_sim_time);
 
     if (bench_mode) {
-        printf("\nDetailed Benchmark Breakdown:\n");
+        printf("\nBreakdown:\n");
         if (!use_direct) {
-            printf("  Octree Build:          %8.3f ms/step (%5.1f%%)\n",
+            printf("  Octree build:   %8.3f ms/step (%5.1f%%)\n",
                    (total_tree_time / steps) * 1000.0, (total_tree_time / total_sim_time) * 100.0);
         }
-        printf("  Force Compute:         %8.3f ms/step (%5.1f%%)\n",
+        printf("  Force compute:  %8.3f ms/step (%5.1f%%)\n",
                (total_force_time / steps) * 1000.0, (total_force_time / total_sim_time) * 100.0);
-        printf("  Symplectic Integrator: %8.3f ms/step (%5.1f%%)\n",
+        printf("  Integration:    %8.3f ms/step (%5.1f%%)\n",
                (total_integ_time / steps) * 1000.0, (total_integ_time / total_sim_time) * 100.0);
 
         double pairwise_equivalent = (double)n * (double)n * (double)steps;
-        printf("  Interactions Evaluated: ~%.2e pairs/sec equivalent\n", pairwise_equivalent / total_sim_time);
+        printf("  Interactions:   ~%.2e pairs/sec equivalent\n", pairwise_equivalent / total_sim_time);
     }
 
-    // Final Energy Diagnostics
     if (n <= 4096) {
         double ke1, pe1;
         particles_compute_energy(&sys, n, DEFAULT_G, eps_sq, &ke1, &pe1);
-        printf("\nFinal Energy   -> KE: %11.4e | PE: %11.4e | Total: %11.4e\n", ke1, pe1, ke1 + pe1);
+        printf("\nEnergy: KE=%.4e | PE=%.4e | Total=%.4e\n", ke1, pe1, ke1 + pe1);
     }
-    printf("=================================================================\n");
 
     return 0;
 }
