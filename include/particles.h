@@ -27,6 +27,8 @@ void particles_reset_accelerations(Particles *sys, int n);
 
 // Symplectic (Semi-implicit) Euler integration step
 void particles_integrate_symplectic(Particles *sys, int n, float dt);
+void particles_integrate_symplectic_reverse_pos(Particles *sys, int n, float dt);
+void particles_integrate_symplectic_reverse_vel(Particles *sys, int n, float dt);
 
 // Diagnostic energy computation (Kinetic + Potential)
 void particles_compute_energy(const Particles *sys, int n, float G, float eps_sq, double *kinetic, double *potential);
